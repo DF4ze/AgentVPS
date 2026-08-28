@@ -1,0 +1,47 @@
+{
+  "//": "Politique de permissions Claude Code pour AgentVPS (Phase 1 de la roadmap). Passee via --settings, combinee a --permission-mode dontAsk (voir ClaudeCliProperties/ClaudeCliService). Une regle deny l'emporte toujours sur allow. En dontAsk, tout ce qui n'est ni dans allow ni dans deny est refuse automatiquement (pas de personne pour repondre a 'ask'). Les patterns sans / initial sont relatifs au repertoire de travail du process claude (le dossier du projet actif, voir roadmap Phase 3 point 6).",
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Write(**)",
+      "Edit(**)",
+      "Bash(ls)",
+      "Bash(ls *)",
+      "Bash(pwd)",
+      "Bash(cat *)",
+      "Bash(mkdir *)",
+      "Bash(mv *)",
+      "Bash(cp *)",
+      "Bash(grep *)",
+      "Bash(find *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(./mvnw *)",
+      "Bash(mvn *)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(rm *)",
+      "Bash(rmdir *)"
+    ],
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Read(/home/agentvps/.ssh/**)",
+      "Read(~/.claude/**)",
+      "Read(/home/agentvps/.claude/**)",
+      "Edit(~/.ssh/**)",
+      "Edit(/home/agentvps/.ssh/**)",
+      "Edit(~/.claude/**)",
+      "Edit(/home/agentvps/.claude/**)",
+      "Edit(/etc/**)",
+      "Edit(/root/**)",
+      "Bash(sudo *)",
+      "Bash(rm -rf *)",
+      "Bash(rm -rf /*)",
+      "Bash(chmod -R 777 *)"
+    ]
+  }
+}

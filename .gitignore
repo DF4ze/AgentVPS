@@ -1,0 +1,27 @@
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### VS Code ###
+.vscode/
+
+### app : jamais de config reelle versionnee (voir application.template.yaml) ###
+application.properties
+application.yaml
+application.yml
+application-local.yml
+.env
+
+### logs (dossier garde via logs/.gitkeep, contenu ignore) ###
+logs/*
+!logs/.gitkeep
+
+/.mvn/

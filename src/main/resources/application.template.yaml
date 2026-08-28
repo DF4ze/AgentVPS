@@ -1,0 +1,57 @@
+# Copier ce fichier en application.yml (non versionne, voir .gitignore) puis
+# renseigner les vraies valeurs / variables d'environnement avant de lancer le service.
+
+spring:
+  application:
+    name: agentvps
+
+logging:
+  file:
+    name: logs/agentvps.log
+  level:
+    root: INFO
+    fr.ses10doigts.agentvps: INFO
+
+telegram:
+  enabled: ${TELEGRAM_ENABLED:false}
+  bots:
+    - id: agentvps-bot
+      token: ${TELEGRAM_AGENTVPS_BOT_TOKEN:}
+      polling-enabled: true
+      auto-register-commands: true
+      configure-menu-button: true
+      security:
+        # A renseigner avant la mise en prod (Phase 1 securite de la roadmap) :
+        # ID Telegram numerique(s) autorises. Liste vide = tout le monde autorise.
+        allowed-user-ids: []
+      retry:
+        enabled: true
+        max-attempts: 3
+        delay-seconds: 2
+
+# Configuration propre a AgentVPS (Phase 3 de la roadmap : service de pilotage
+# de Claude Code). Complete au fur et a mesure de l'implementation.
+agentvps:
+  claude:
+    # Chemin du binaire claude installe sous l'utilisateur dedie (agentvps),
+    # voir roadmap-implementation.md, Phase 0bis.
+    binary-path: ${AGENTVPS_CLAUDE_BINARY:/home/agentvps/.local/bin/claude}
+    # Delai maximum (secondes) avant destruction forcee du process claude.
+    timeout-seconds: ${AGENTVPS_CLAUDE_TIMEOUT_SECONDS:120}
+    # Appel de test au demarrage (ClaudeCliSmokeTestRunner) : desactive par defaut,
+    # a activer uniquement sur un environnement ou claude est installe et authentifie
+    # (le VPS, pas le poste de dev) - voir roadmap-implementation.md, Phase 3, point 3.
+    smoke-test-enabled: ${AGENTVPS_CLAUDE_SMOKE_TEST:false}
+    smoke-test-prompt: "${AGENTVPS_CLAUDE_SMOKE_TEST_PROMPT:Reponds uniquement avec le mot pong}"
+    # Phase 1 (securite) : sans ces deux options, claude ne peut faire AUCUNE action
+    # sur le filesystem en headless (teste le 28/08/2026). "dontAsk" refuse tout ce qui
+    # n'est pas explicitement autorise dans le settings.json (permission.allow) - voir
+    # ce fichier pour les regles allow/ask/deny (src/main/resources/claude-settings.json,
+    # a deployer sur le VPS au chemin ci-dessous).
+    permission-mode: ${AGENTVPS_CLAUDE_PERMISSION_MODE:dontAsk}
+    settings-path: ${AGENTVPS_CLAUDE_SETTINGS_PATH:/home/agentvps/.config/agentvps/claude-settings.json}
+  workspace:
+    # Dossier partage (memoires/doc inter-projets) et dossier des projets
+    # (un sous-dossier par projet, avec son propre CLAUDE.md), voir roadmap
+    # Phase 3, points 5 et 6.
+    root-dir: ${AGENTVPS_WORKSPACE_ROOT:${user.home}/AgentVPS}
