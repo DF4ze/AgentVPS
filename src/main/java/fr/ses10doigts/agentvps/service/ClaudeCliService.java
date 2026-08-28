@@ -139,6 +139,9 @@ public class ClaudeCliService {
                     .formatted(result.getSubtype(), result.getResult()));
         }
 
+        log.info("Appel claude CLI reussi (session_id={}, num_turns={}, duration_ms={}, cost_usd={})",
+                result.getSessionId(), result.getNumTurns(), result.getDurationMs(), result.getTotalCostUsd());
+
         return result;
     }
 

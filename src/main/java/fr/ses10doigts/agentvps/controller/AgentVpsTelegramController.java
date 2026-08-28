@@ -16,6 +16,7 @@ import fr.ses10doigts.telegrambots.service.poller.handler.annot.TelegramControll
 import fr.ses10doigts.telegrambots.service.sender.TelegramSender;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
 
 import java.nio.file.Path;
@@ -70,19 +71,24 @@ public class AgentVpsTelegramController {
     @Command(value = "/projet", description = "Gerer les projets (list, new <nom>, delete, <nom>)")
     public void projet(TelegramUpdateContext context) {
         Long chatId = context.getChatId();
-        List<String> args = context.getArgs();
+        MDC.put("chatId", String.valueOf(chatId));
+        try {
+            List<String> args = context.getArgs();
 
-        if (args.isEmpty()) {
-            showActiveProject(chatId);
-            return;
-        }
+            if (args.isEmpty()) {
+                showActiveProject(chatId);
+                return;
+            }
 
-        String sub = args.getFirst().toLowerCase(Locale.ROOT);
-        switch (sub) {
-            case "list" -> listProjects(chatId);
-            case "new" -> createProject(chatId, joinFrom(args, 1));
-            case "delete" -> deleteProject(chatId, joinFrom(args, 1));
-            default -> switchProject(chatId, context.getCommandArgsRaw());
+            String sub = args.getFirst().toLowerCase(Locale.ROOT);
+            switch (sub) {
+                case "list" -> listProjects(chatId);
+                case "new" -> createProject(chatId, joinFrom(args, 1));
+                case "delete" -> deleteProject(chatId, joinFrom(args, 1));
+                default -> switchProject(chatId, context.getCommandArgsRaw());
+            }
+        } finally {
+            MDC.remove("chatId");
         }
     }
 
@@ -123,18 +129,23 @@ public class AgentVpsTelegramController {
             return;
         }
 
-        sender().sendTyping(chatId);
+        MDC.put("project", rawName);
         try {
-            ProjectOnboardingService.OnboardingResult result = onboardingService.createProjectAndStartOnboarding(rawName);
-            sender().sendMessage(chatId,
-                    "Projet '" + result.project().getName() + "' cree.\n\n" + result.firstClaudeMessage());
-        } catch (ProjectException e) {
-            sender().sendMessage(chatId, "Impossible de creer le projet : " + e.getMessage());
-        } catch (ClaudeCliException e) {
-            log.error("Echec de l'interview d'onboarding pour le nouveau projet '{}'", rawName, e);
-            sender().sendMessage(chatId,
-                    "Le projet a ete cree mais l'interview a echoue (" + e.getMessage() + "). "
-                            + "Tu peux quand meme lui ecrire directement pour continuer.");
+            sender().sendTyping(chatId);
+            try {
+                ProjectOnboardingService.OnboardingResult result = onboardingService.createProjectAndStartOnboarding(rawName);
+                sender().sendMessage(chatId,
+                        "Projet '" + result.project().getName() + "' cree.\n\n" + result.firstClaudeMessage());
+            } catch (ProjectException e) {
+                sender().sendMessage(chatId, "Impossible de creer le projet : " + e.getMessage());
+            } catch (ClaudeCliException e) {
+                log.error("Echec de l'interview d'onboarding pour le nouveau projet '{}'", rawName, e);
+                sender().sendMessage(chatId,
+                        "Le projet a ete cree mais l'interview a echoue (" + e.getMessage() + "). "
+                                + "Tu peux quand meme lui ecrire directement pour continuer.");
+            }
+        } finally {
+            MDC.remove("project");
         }
     }
 
@@ -174,24 +185,31 @@ public class AgentVpsTelegramController {
     @Command(value = "/conv", description = "Gerer les conversations du projet actif (list, new, <numero>)")
     public void conv(TelegramUpdateContext context) {
         Long chatId = context.getChatId();
-        Optional<Project> activeOpt = projectService.getActiveProject();
-        if (activeOpt.isEmpty()) {
-            sender().sendMessage(chatId, noActiveProjectHint());
-            return;
-        }
-        Project active = activeOpt.get();
-        List<String> args = context.getArgs();
+        MDC.put("chatId", String.valueOf(chatId));
+        try {
+            Optional<Project> activeOpt = projectService.getActiveProject();
+            if (activeOpt.isEmpty()) {
+                sender().sendMessage(chatId, noActiveProjectHint());
+                return;
+            }
+            Project active = activeOpt.get();
+            MDC.put("project", active.getName());
+            List<String> args = context.getArgs();
 
-        if (args.isEmpty()) {
-            showCurrentConversation(chatId, active);
-            return;
-        }
+            if (args.isEmpty()) {
+                showCurrentConversation(chatId, active);
+                return;
+            }
 
-        String sub = args.getFirst().toLowerCase(Locale.ROOT);
-        switch (sub) {
-            case "list" -> listConversations(chatId, active);
-            case "new" -> startNewConversation(chatId, active);
-            default -> switchConversation(chatId, active, args.getFirst());
+            String sub = args.getFirst().toLowerCase(Locale.ROOT);
+            switch (sub) {
+                case "list" -> listConversations(chatId, active);
+                case "new" -> startNewConversation(chatId, active);
+                default -> switchConversation(chatId, active, args.getFirst());
+            }
+        } finally {
+            MDC.remove("project");
+            MDC.remove("chatId");
         }
     }
 
@@ -264,27 +282,34 @@ public class AgentVpsTelegramController {
             return;
         }
 
-        Optional<Project> activeOpt = projectService.getActiveProject();
-        if (activeOpt.isEmpty()) {
-            handleChatWithoutActiveProject(chatId);
-            return;
-        }
-
-        Project active = activeOpt.get();
-        String sessionId = active.getCurrentSessionId();
-
-        sender().sendTyping(chatId);
+        MDC.put("chatId", String.valueOf(chatId));
         try {
-            ClaudeCliResult result = claudeCliService.call(text, sessionId, Path.of(active.getWorkingDirectory()));
-            if (sessionId == null) {
-                projectService.recordConversationStart(active.getName(), result.getSessionId(), null);
-            } else {
-                projectService.touchConversation(active.getName(), sessionId);
+            Optional<Project> activeOpt = projectService.getActiveProject();
+            if (activeOpt.isEmpty()) {
+                handleChatWithoutActiveProject(chatId);
+                return;
             }
-            sender().sendMessage(chatId, result.getResult());
-        } catch (ClaudeCliException e) {
-            log.error("Echec de l'appel claude pour le projet '{}'", active.getName(), e);
-            sender().sendMessage(chatId, "Erreur lors de l'appel a Claude : " + e.getMessage());
+
+            Project active = activeOpt.get();
+            MDC.put("project", active.getName());
+            String sessionId = active.getCurrentSessionId();
+
+            sender().sendTyping(chatId);
+            try {
+                ClaudeCliResult result = claudeCliService.call(text, sessionId, Path.of(active.getWorkingDirectory()));
+                if (sessionId == null) {
+                    projectService.recordConversationStart(active.getName(), result.getSessionId(), null);
+                } else {
+                    projectService.touchConversation(active.getName(), sessionId);
+                }
+                sender().sendMessage(chatId, result.getResult());
+            } catch (ClaudeCliException e) {
+                log.error("Echec de l'appel claude pour le projet '{}'", active.getName(), e);
+                sender().sendMessage(chatId, "Erreur lors de l'appel a Claude : " + e.getMessage());
+            }
+        } finally {
+            MDC.remove("project");
+            MDC.remove("chatId");
         }
     }
 
@@ -301,16 +326,21 @@ public class AgentVpsTelegramController {
             return;
         }
 
-        sender().sendTyping(chatId);
+        MDC.put("project", DEFAULT_PROJECT_NAME);
         try {
-            ProjectOnboardingService.OnboardingResult result =
-                    onboardingService.createProjectAndStartOnboarding(DEFAULT_PROJECT_NAME);
-            sender().sendMessage(chatId,
-                    "Aucun projet n'existait encore : projet '" + result.project().getName() + "' cree automatiquement.\n\n"
-                            + result.firstClaudeMessage());
-        } catch (ProjectException | ClaudeCliException e) {
-            log.error("Echec de la creation automatique du projet par defaut", e);
-            sender().sendMessage(chatId, "Erreur lors de la creation automatique du projet : " + e.getMessage());
+            sender().sendTyping(chatId);
+            try {
+                ProjectOnboardingService.OnboardingResult result =
+                        onboardingService.createProjectAndStartOnboarding(DEFAULT_PROJECT_NAME);
+                sender().sendMessage(chatId,
+                        "Aucun projet n'existait encore : projet '" + result.project().getName() + "' cree automatiquement.\n\n"
+                                + result.firstClaudeMessage());
+            } catch (ProjectException | ClaudeCliException e) {
+                log.error("Echec de la creation automatique du projet par defaut", e);
+                sender().sendMessage(chatId, "Erreur lors de la creation automatique du projet : " + e.getMessage());
+            }
+        } finally {
+            MDC.remove("project");
         }
     }
 
