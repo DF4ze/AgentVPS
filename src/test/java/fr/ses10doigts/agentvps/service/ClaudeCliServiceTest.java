@@ -2,6 +2,7 @@ package fr.ses10doigts.agentvps.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import fr.ses10doigts.agentvps.config.ClaudeCliProperties;
+import fr.ses10doigts.agentvps.config.ClaudeProvider;
 import fr.ses10doigts.agentvps.model.ClaudeCliResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -100,6 +101,52 @@ class ClaudeCliServiceTest {
     }
 
     @Test
+    void defaultProviderIsAnthropic() {
+        ClaudeCliProperties defaults = new ClaudeCliProperties();
+
+        assertThat(defaults.getProvider()).isEqualTo(ClaudeProvider.ANTHROPIC);
+        assertThat(defaults.getOpenRouterBinaryPath()).isNotBlank();
+        assertThat(defaults.getOpenRouterModel()).isNull();
+    }
+
+    @Test
+    void buildsCommandForOpenRouterProviderWithModel() {
+        properties.setProvider(ClaudeProvider.OPENROUTER);
+        properties.setOpenRouterBinaryPath("/home/agentvps/.local/bin/ori");
+        properties.setOpenRouterModel("openai/gpt-5");
+
+        List<String> command = service.buildCommand("bonjour", null);
+
+        assertThat(command).containsExactly(
+                "/home/agentvps/.local/bin/ori", "claude", "--model", "openai/gpt-5",
+                "-p", "bonjour", "--output-format", "json");
+    }
+
+    @Test
+    void buildsCommandForOpenRouterProviderWithoutModelWhenBlank() {
+        properties.setProvider(ClaudeProvider.OPENROUTER);
+        properties.setOpenRouterBinaryPath("/home/agentvps/.local/bin/ori");
+        properties.setOpenRouterModel("  ");
+
+        List<String> command = service.buildCommand("bonjour", null);
+
+        assertThat(command).containsExactly(
+                "/home/agentvps/.local/bin/ori", "claude", "-p", "bonjour", "--output-format", "json");
+        assertThat(command).doesNotContain("--model");
+    }
+
+    @Test
+    void anthropicProviderIgnoresOpenRouterProperties() {
+        properties.setOpenRouterBinaryPath("/home/agentvps/.local/bin/ori");
+        properties.setOpenRouterModel("openai/gpt-5");
+
+        List<String> command = service.buildCommand("bonjour", null);
+
+        assertThat(command.getFirst()).isEqualTo("/home/agentvps/.local/bin/claude");
+        assertThat(command).doesNotContain("ori", "--model");
+    }
+
+    @Test
     void appliesDisableAutoMemoryEnvironmentVariableByDefault() {
         ProcessBuilder processBuilder = new ProcessBuilder(List.of("true"));
 
@@ -118,6 +165,21 @@ class ClaudeCliServiceTest {
 
         Map<String, String> env = processBuilder.environment();
         assertThat(env).doesNotContainKey("CLAUDE_CODE_DISABLE_AUTO_MEMORY");
+    }
+
+    @Test
+    void appliesTelemetryAndTrafficEnvironmentVariablesUnconditionally() {
+        ProcessBuilder processBuilder = new ProcessBuilder(List.of("true"));
+
+        service.applyEnvironment(processBuilder);
+
+        Map<String, String> env = processBuilder.environment();
+        assertThat(env).containsEntry("DISABLE_TELEMETRY", "1");
+        assertThat(env).containsEntry("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
+        // DISABLE_GROWTHBOOK=0 pose deliberement a cote de DISABLE_TELEMETRY=1 : GrowthBook
+        // sert aussi a la livraison de killswitches distants (issue anthropics/claude-code#58383,
+        // DISABLE_TELEMETRY le coupe silencieusement) - on evite de perdre cette couverture.
+        assertThat(env).containsEntry("DISABLE_GROWTHBOOK", "0");
     }
 
     @Test

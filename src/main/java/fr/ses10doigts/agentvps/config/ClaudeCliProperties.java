@@ -54,4 +54,29 @@ public class ClaudeCliProperties {
      * --append-system-prompt, pas par cette memoire. Actif par defaut.
      */
     private boolean disableAutoMemory = true;
+
+    /**
+     * Fournisseur utilise pour l'appel : ANTHROPIC (API native, defaut) ou OPENROUTER
+     * (route via Ori Harness, voir openRouterBinaryPath/openRouterModel ci-dessous).
+     * Ori a ete installe et valide de bout en bout sur le VPS fin aout 2026 (memoire
+     * projet "ori_openrouter_integration") : "ori claude --model <id> -p ..." se
+     * comporte comme "claude -p ..." (memes flags, meme schema JSON de sortie), seul
+     * le modele qui repond change.
+     */
+    private ClaudeProvider provider = ClaudeProvider.ANTHROPIC;
+
+    /**
+     * Chemin absolu du binaire ori, utilise uniquement quand provider=OPENROUTER.
+     * Installe sous l'utilisateur agentvps dans ~/.local/bin, hors du PATH par defaut
+     * d'un ProcessBuilder/systemd (qui ne source pas .bashrc) - d'ou un chemin absolu,
+     * meme raison que pour binaryPath.
+     */
+    private String openRouterBinaryPath = "/home/agentvps/.local/bin/ori";
+
+    /**
+     * Modele OpenRouter a utiliser (ex "openai/gpt-5"), passe en "--model <valeur>" a
+     * "ori claude". Utilise uniquement quand provider=OPENROUTER ; vide/blank = flag
+     * non transmis (ori utilise alors son modele par defaut).
+     */
+    private String openRouterModel;
 }

@@ -3,6 +3,7 @@ package fr.ses10doigts.agentvps.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import fr.ses10doigts.agentvps.config.ClaudeCliProperties;
+import fr.ses10doigts.agentvps.config.ClaudeProvider;
 import fr.ses10doigts.agentvps.model.ClaudeCliResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +23,10 @@ import java.util.concurrent.TimeUnit;
  * via ProcessBuilder, capture stdout/stderr avec timeout configurable, et parse
  * la sortie JSON. Voir roadmap-implementation.md (Phase 3, point 3) et
  * agent-vps-notes.md (section 5.2/5.3) pour le contexte et le protocole exact.
+ *
+ * Depuis fin aout 2026, peut aussi router l'appel via Ori Harness vers un modele
+ * OpenRouter (ClaudeCliProperties.provider=OPENROUTER) - voir buildCommand() et la
+ * memoire projet "ori_openrouter_integration" pour le detail de la validation.
  */
 @Service
 @RequiredArgsConstructor
@@ -64,8 +69,9 @@ public class ClaudeCliService {
         }
 
         List<String> command = buildCommand(prompt, resumeSessionId, appendSystemPrompt);
-        log.info("Appel claude CLI (resume={}, cwd={}, appendSystemPrompt={})",
-                resumeSessionId != null, workingDirectory, appendSystemPrompt != null && !appendSystemPrompt.isBlank());
+        log.info("Appel claude CLI (provider={}, resume={}, cwd={}, appendSystemPrompt={})",
+                properties.getProvider(), resumeSessionId != null, workingDirectory,
+                appendSystemPrompt != null && !appendSystemPrompt.isBlank());
         log.debug("Commande : {}", command);
 
         ProcessBuilder processBuilder = new ProcessBuilder(command);
@@ -79,7 +85,7 @@ public class ClaudeCliService {
             process = processBuilder.start();
         } catch (IOException e) {
             throw new ClaudeCliException(
-                    "Impossible de demarrer le process claude (binaire : " + properties.getBinaryPath() + ")", e);
+                    "Impossible de demarrer le process claude (binaire : " + command.getFirst() + ")", e);
         }
 
         // Le prompt est deja passe en argument : on ferme stdin immediatement pour
@@ -140,9 +146,28 @@ public class ClaudeCliService {
         return buildCommand(prompt, resumeSessionId, null);
     }
 
+    /**
+     * Construit la commande a executer. En provider=ANTHROPIC (defaut), c'est le
+     * binaire claude directement. En provider=OPENROUTER, c'est "ori claude
+     * [--model <id>]" - Ori Harness localise le vrai binaire claude, pose les
+     * variables d'environnement necessaires (ANTHROPIC_BASE_URL vers OpenRouter,
+     * etc.) puis l'execute en lui passant tous les flags qui suivent tels quels
+     * (-p, --output-format json, --resume, --permission-mode, --settings...) - voir
+     * la memoire projet "ori_openrouter_integration" pour la verification faite le
+     * 29/08/2026 (appel -p reel avec openai/gpt-5, meme schema JSON en sortie).
+     */
     List<String> buildCommand(String prompt, String resumeSessionId, String appendSystemPrompt) {
         List<String> command = new ArrayList<>();
-        command.add(properties.getBinaryPath());
+        if (properties.getProvider() == ClaudeProvider.OPENROUTER) {
+            command.add(properties.getOpenRouterBinaryPath());
+            command.add("claude");
+            if (properties.getOpenRouterModel() != null && !properties.getOpenRouterModel().isBlank()) {
+                command.add("--model");
+                command.add(properties.getOpenRouterModel());
+            }
+        } else {
+            command.add(properties.getBinaryPath());
+        }
         command.add("-p");
         command.add(prompt);
         command.add("--output-format");
@@ -170,15 +195,29 @@ public class ClaudeCliService {
      * Applique les variables d'environnement necessaires au sous-processus claude,
      * en plus de celles heritees du process Java (ProcessBuilder.environment() est
      * une copie mutable de l'environnement courant, pas un environnement vide).
-     * Pour l'instant : CLAUDE_CODE_DISABLE_AUTO_MEMORY, qui desactive l'"auto memory"
-     * native de Claude Code (voir ClaudeCliProperties.disableAutoMemory pour le detail
-     * et la decouverte du 28/08/2026 - cette memoire etait bloquee par le
-     * settings.json de la Phase 1 securite, ce qui faisait perdre des tours a claude).
+     *
+     * - CLAUDE_CODE_DISABLE_AUTO_MEMORY (conditionnel, voir ClaudeCliProperties.disableAutoMemory)
+     *   desactive l'"auto memory" native de Claude Code (decouverte du 28/08/2026 -
+     *   cette memoire etait bloquee par le settings.json de la Phase 1 securite, ce
+     *   qui faisait perdre des tours a claude).
+     * - DISABLE_TELEMETRY / CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC / DISABLE_GROWTHBOOK
+     *   (poses en dur, inconditionnels) reduisent le trafic reseau non essentiel et la
+     *   telemetrie envoyee par Claude Code. DISABLE_GROWTHBOOK=0 est deliberement pose a
+     *   cote de DISABLE_TELEMETRY=1 : GrowthBook sert aussi a la livraison de
+     *   "killswitches" distants (cf issue anthropics/claude-code#58383 - DISABLE_TELEMETRY
+     *   coupe silencieusement GrowthBook en entier), donc on le reactive explicitement
+     *   pour ne pas perdre cette couverture. C'est exactement la meme combinaison que
+     *   celle posee par Ori Harness pour ses propres lancements (verifiee par capture
+     *   d'environnement le 29/08/2026), appliquee ici que le provider soit ANTHROPIC ou
+     *   OPENROUTER.
      */
     void applyEnvironment(ProcessBuilder processBuilder) {
         if (properties.isDisableAutoMemory()) {
             processBuilder.environment().put("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1");
         }
+        processBuilder.environment().put("DISABLE_TELEMETRY", "1");
+        processBuilder.environment().put("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
+        processBuilder.environment().put("DISABLE_GROWTHBOOK", "0");
     }
 
     ClaudeCliResult parseResult(String stdout) {

@@ -55,6 +55,15 @@ agentvps:
     # facon par le settings.json ci-dessus (deny sur ~/.claude/**), donc autant eviter
     # que claude perde des tours a tenter d'y ecrire. Voir ClaudeCliProperties.
     disable-auto-memory: ${AGENTVPS_CLAUDE_DISABLE_AUTO_MEMORY:true}
+    # Fournisseur utilise pour l'appel : ANTHROPIC (API native, defaut) ou OPENROUTER
+    # (route via Ori Harness vers un modele OpenRouter - voir les deux cles ci-dessous
+    # et la memoire projet "ori_openrouter_integration" pour le contexte complet).
+    provider: ${AGENTVPS_CLAUDE_PROVIDER:ANTHROPIC}
+    # Chemin absolu du binaire ori, utilise uniquement si provider=OPENROUTER.
+    open-router-binary-path: ${AGENTVPS_CLAUDE_OPENROUTER_BINARY:/home/agentvps/.local/bin/ori}
+    # Modele OpenRouter a utiliser (ex "openai/gpt-5"), utilise uniquement si
+    # provider=OPENROUTER. Vide = ori utilise son modele par defaut.
+    open-router-model: ${AGENTVPS_CLAUDE_OPENROUTER_MODEL:}
   workspace:
     # Dossier partage (memoires/doc inter-projets) et dossier des projets
     # (un sous-dossier par projet, avec son propre CLAUDE.md), voir roadmap
