@@ -17,6 +17,16 @@
 
     <properties>
         <java.version>21</java.version>
+        <!-- Sans ces deux proprietes, le compilateur (et le rapport de build) retombent
+             sur l'encodage "plateforme" par defaut du shell qui lance mvnw. Sur Windows,
+             selon la console/le codepage actif, ca peut ne PAS etre UTF-8 malgre JDK 26 +
+             JEP 400 - constate le 28/08/2026 : les caracteres accentues des sources UTF-8
+             (ex. "archive" -> "archivé") se retrouvaient corrompus (caractere de
+             remplacement U+FFFD) dans les String compilees, de facon non deterministe
+             (ca marchait plus tot la meme journee). Fixe l'encodage independamment du
+             shell/de la session utilisee pour lancer le build. -->
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     </properties>
 
     <dependencies>

@@ -67,7 +67,7 @@ public class AgentVpsTelegramController {
 
     // ---------------------------------------------------------------- /projet
 
-    @Command(value = "/projet", description = "Gérer les projets (list, new <nom>, delete, <nom>)")
+    @Command(value = "/projet", description = "Gerer les projets (list, new <nom>, delete, <nom>)")
     public void projet(TelegramUpdateContext context) {
         Long chatId = context.getChatId();
         List<String> args = context.getArgs();
@@ -98,7 +98,7 @@ public class AgentVpsTelegramController {
     private void listProjects(Long chatId) {
         List<Project> projects = projectService.listProjects();
         if (projects.isEmpty()) {
-            sender().sendMessage(chatId, "Aucun projet pour l'instant. Utilise /projet new <nom> pour en créer un.");
+            sender().sendMessage(chatId, "Aucun projet pour l'instant. Utilise /projet new <nom> pour en creer un.");
             return;
         }
 
@@ -110,7 +110,7 @@ public class AgentVpsTelegramController {
             if (isActive) {
                 sb.append(" (actif)");
             } else if (p.getStatus() == ProjectStatus.ARCHIVED) {
-                sb.append(" (archivé)");
+                sb.append(" (archive)");
             }
             sb.append('\n');
         }
@@ -171,7 +171,7 @@ public class AgentVpsTelegramController {
 
     // ------------------------------------------------------------------ /conv
 
-    @Command(value = "/conv", description = "Gérer les conversations du projet actif (list, new, <numero>)")
+    @Command(value = "/conv", description = "Gerer les conversations du projet actif (list, new, <numero>)")
     public void conv(TelegramUpdateContext context) {
         Long chatId = context.getChatId();
         Optional<Project> activeOpt = projectService.getActiveProject();
@@ -199,7 +199,7 @@ public class AgentVpsTelegramController {
         Optional<Conversation> current = projectService.getCurrentConversation(active.getName());
         if (current.isEmpty()) {
             sender().sendMessage(chatId,
-                    "Projet '" + active.getName() + "' : pas de conversation en cours (le prochain message en démarrera une nouvelle).");
+                    "Projet '" + active.getName() + "' : pas de conversation en cours (le prochain message en demarrera une nouvelle).");
             return;
         }
         sender().sendMessage(chatId, "Conversation en cours : " + describe(current.get()));
@@ -208,7 +208,7 @@ public class AgentVpsTelegramController {
     private void listConversations(Long chatId, Project active) {
         List<Conversation> conversations = projectService.listConversations(active.getName());
         if (conversations.isEmpty()) {
-            sender().sendMessage(chatId, "Aucune conversation pour l'instant. Ecris un message pour en démarrer une.");
+            sender().sendMessage(chatId, "Aucune conversation pour l'instant. Ecris un message pour en demarrer une.");
             return;
         }
 
