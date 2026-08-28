@@ -50,6 +50,11 @@ agentvps:
     # a deployer sur le VPS au chemin ci-dessous).
     permission-mode: ${AGENTVPS_CLAUDE_PERMISSION_MODE:dontAsk}
     settings-path: ${AGENTVPS_CLAUDE_SETTINGS_PATH:/home/agentvps/.config/agentvps/claude-settings.json}
+    # Coupe l'"auto memory" native de Claude Code (ecriture spontanee dans
+    # ~/.claude/projects/<projet>/memory/, distincte de CLAUDE.md) - bloquee de toute
+    # facon par le settings.json ci-dessus (deny sur ~/.claude/**), donc autant eviter
+    # que claude perde des tours a tenter d'y ecrire. Voir ClaudeCliProperties.
+    disable-auto-memory: ${AGENTVPS_CLAUDE_DISABLE_AUTO_MEMORY:true}
   workspace:
     # Dossier partage (memoires/doc inter-projets) et dossier des projets
     # (un sous-dossier par projet, avec son propre CLAUDE.md), voir roadmap

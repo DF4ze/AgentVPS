@@ -72,6 +72,7 @@ public class ClaudeCliService {
         if (workingDirectory != null) {
             processBuilder.directory(workingDirectory.toFile());
         }
+        applyEnvironment(processBuilder);
 
         Process process;
         try {
@@ -163,6 +164,21 @@ public class ClaudeCliService {
             command.add(properties.getSettingsPath());
         }
         return command;
+    }
+
+    /**
+     * Applique les variables d'environnement necessaires au sous-processus claude,
+     * en plus de celles heritees du process Java (ProcessBuilder.environment() est
+     * une copie mutable de l'environnement courant, pas un environnement vide).
+     * Pour l'instant : CLAUDE_CODE_DISABLE_AUTO_MEMORY, qui desactive l'"auto memory"
+     * native de Claude Code (voir ClaudeCliProperties.disableAutoMemory pour le detail
+     * et la decouverte du 28/08/2026 - cette memoire etait bloquee par le
+     * settings.json de la Phase 1 securite, ce qui faisait perdre des tours a claude).
+     */
+    void applyEnvironment(ProcessBuilder processBuilder) {
+        if (properties.isDisableAutoMemory()) {
+            processBuilder.environment().put("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1");
+        }
     }
 
     ClaudeCliResult parseResult(String stdout) {

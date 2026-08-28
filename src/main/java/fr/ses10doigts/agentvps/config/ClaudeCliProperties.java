@@ -39,4 +39,19 @@ public class ClaudeCliProperties {
      * Vide/blank = flag non transmis.
      */
     private String settingsPath = "/home/agentvps/.config/agentvps/claude-settings.json";
+
+    /**
+     * Coupe l'"auto memory" native de Claude Code (notes que claude redige de sa
+     * propre initiative entre sessions dans ~/.claude/projects/<projet>/memory/,
+     * fonctionnalite distincte de CLAUDE.md - voir <a href="https://code.claude.com/docs/en/memory">...</a>).
+     * Decouverte le 28/08/2026 : cette memoire est bloquee par les regles deny sur
+     * ~/.claude/** du settings.json (Phase 1 securite), ce qui fait perdre du temps/des
+     * tours a claude qui tente d'y ecrire puis echoue. Plutot que d'ouvrir une exception
+     * de permission, on desactive la fonctionnalite elle-meme via la variable
+     * d'environnement CLAUDE_CODE_DISABLE_AUTO_MEMORY (voir ClaudeCliService), qui evite
+     * meme que l'outil soit propose au modele. CLAUDE.md reste la memoire de chaque
+     * projet ; les regles fixes (ex. "VPS de production, sois prudent") passent par
+     * --append-system-prompt, pas par cette memoire. Actif par defaut.
+     */
+    private boolean disableAutoMemory = true;
 }

@@ -7,6 +7,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -96,6 +97,34 @@ class ClaudeCliServiceTest {
 
         assertThat(defaults.getPermissionMode()).isEqualTo("dontAsk");
         assertThat(defaults.getSettingsPath()).isNotBlank();
+    }
+
+    @Test
+    void appliesDisableAutoMemoryEnvironmentVariableByDefault() {
+        ProcessBuilder processBuilder = new ProcessBuilder(List.of("true"));
+
+        service.applyEnvironment(processBuilder);
+
+        Map<String, String> env = processBuilder.environment();
+        assertThat(env).containsEntry("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1");
+    }
+
+    @Test
+    void omitsDisableAutoMemoryEnvironmentVariableWhenDisabled() {
+        properties.setDisableAutoMemory(false);
+        ProcessBuilder processBuilder = new ProcessBuilder(List.of("true"));
+
+        service.applyEnvironment(processBuilder);
+
+        Map<String, String> env = processBuilder.environment();
+        assertThat(env).doesNotContainKey("CLAUDE_CODE_DISABLE_AUTO_MEMORY");
+    }
+
+    @Test
+    void defaultPropertiesDisableAutoMemoryByDefault() {
+        ClaudeCliProperties defaults = new ClaudeCliProperties();
+
+        assertThat(defaults.isDisableAutoMemory()).isTrue();
     }
 
     @Test
