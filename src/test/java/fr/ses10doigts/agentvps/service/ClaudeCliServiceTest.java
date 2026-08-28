@@ -52,6 +52,22 @@ class ClaudeCliServiceTest {
     }
 
     @Test
+    void buildsCommandWithAppendSystemPrompt() {
+        List<String> command = service.buildCommand("bonjour", null, "instructions additionnelles");
+
+        assertThat(command).containsExactly(
+                "/home/agentvps/.local/bin/claude", "-p", "bonjour", "--output-format", "json",
+                "--append-system-prompt", "instructions additionnelles");
+    }
+
+    @Test
+    void omitsAppendSystemPromptWhenBlank() {
+        List<String> command = service.buildCommand("bonjour", null, "   ");
+
+        assertThat(command).doesNotContain("--append-system-prompt");
+    }
+
+        @Test
     void buildsCommandWithPermissionModeAndSettingsWhenConfigured() {
         properties.setPermissionMode("dontAsk");
         properties.setSettingsPath("/home/agentvps/.config/agentvps/claude-settings.json");

@@ -46,12 +46,26 @@ public class ClaudeCliService {
      * @param workingDirectory repertoire de travail du process, ou null pour le repertoire courant de l'application
      */
     public ClaudeCliResult call(String prompt, String resumeSessionId, Path workingDirectory) {
+        return call(prompt, resumeSessionId, workingDirectory, null);
+    }
+
+    /**
+     * Variante de call() acceptant un system-prompt additionnel (--append-system-prompt),
+     * utilisee pour l'interview de creation de projet (voir ProjectOnboardingService) :
+     * pas de flag --system-prompt-file dans cette version de claude (voir
+     * roadmap-implementation.md, Phase 0 point 4), le texte est donc passe tel quel en
+     * argument - pas de souci d'echappement, ProcessBuilder(List) ne passe pas par un shell.
+     *
+     * @param appendSystemPrompt texte ajoute au system prompt par defaut de claude, ou null/vide pour l'omettre
+     */
+    public ClaudeCliResult call(String prompt, String resumeSessionId, Path workingDirectory, String appendSystemPrompt) {
         if (prompt == null || prompt.isBlank()) {
             throw new IllegalArgumentException("Le prompt ne peut pas etre vide");
         }
 
-        List<String> command = buildCommand(prompt, resumeSessionId);
-        log.info("Appel claude CLI (resume={}, cwd={})", resumeSessionId != null, workingDirectory);
+        List<String> command = buildCommand(prompt, resumeSessionId, appendSystemPrompt);
+        log.info("Appel claude CLI (resume={}, cwd={}, appendSystemPrompt={})",
+                resumeSessionId != null, workingDirectory, appendSystemPrompt != null && !appendSystemPrompt.isBlank());
         log.debug("Commande : {}", command);
 
         ProcessBuilder processBuilder = new ProcessBuilder(command);
@@ -122,6 +136,10 @@ public class ClaudeCliService {
     }
 
     List<String> buildCommand(String prompt, String resumeSessionId) {
+        return buildCommand(prompt, resumeSessionId, null);
+    }
+
+    List<String> buildCommand(String prompt, String resumeSessionId, String appendSystemPrompt) {
         List<String> command = new ArrayList<>();
         command.add(properties.getBinaryPath());
         command.add("-p");
@@ -131,6 +149,10 @@ public class ClaudeCliService {
         if (resumeSessionId != null && !resumeSessionId.isBlank()) {
             command.add("--resume");
             command.add(resumeSessionId);
+        }
+        if (appendSystemPrompt != null && !appendSystemPrompt.isBlank()) {
+            command.add("--append-system-prompt");
+            command.add(appendSystemPrompt);
         }
         if (properties.getPermissionMode() != null && !properties.getPermissionMode().isBlank()) {
             command.add("--permission-mode");

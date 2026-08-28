@@ -45,6 +45,14 @@
             <artifactId>jackson-databind</artifactId>
         </dependency>
 
+        <!-- java.time (Instant...) dans les DTO persistes (Project/Conversation/ProjectStore) :
+             sans le starter Jackson de Spring (pas de spring-web ici, voir JacksonConfig),
+             l'ObjectMapper explicite doit enregistrer ce module lui-meme. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+        </dependency>
+
         <!-- ConfigurationProperties -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
