@@ -24,6 +24,7 @@ import fr.ses10doigts.telegrambots.service.poller.handler.annot.Chat;
 import fr.ses10doigts.telegrambots.service.poller.handler.annot.Command;
 import fr.ses10doigts.telegrambots.service.poller.handler.annot.TelegramController;
 import fr.ses10doigts.telegrambots.service.sender.TelegramSender;
+import fr.ses10doigts.telegrambots.service.sender.TelegramSenderRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -35,6 +36,9 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Point d'entree Telegram d'AgentVPS (roadmap Phase 3, point 4) : commande /projet
@@ -42,7 +46,7 @@ import java.util.Optional;
  * actif) et @Chat (message libre transmis a "claude -p", avec ou sans --resume selon
  * la conversation courante du projet actif).
  *
- * Trois choix de conception a noter :
+ * Quatre choix de conception a noter :
  *
  * 1. TelegramSender est injecte via ObjectProvider, pas directement. Le bean
  * TelegramSender (comme TelegramHandlerRegistry, voir TelegramBuiltinController dans
@@ -65,6 +69,15 @@ import java.util.Optional;
  * reponse (ou le message d'erreur) une fois l'appel termine - un appel peut prendre jusqu'a
  * 120s et le seul autre signal cote Telegram est le "typing..." ephemere de sendTyping.
  * Ca donne a Clem un ACK immediat que le bot a bien recu le message et est UP.
+ *
+ * 4. Le "typing..." de Telegram s'efface tout seul au bout de ~5s : chat() le relance donc
+ * en tache de fond (startTypingHeartbeat) pendant toute la duree de l'appel claude, pour un
+ * signal visuel continu. Ce heartbeat tourne sur un thread dedie (pas le thread Telegram
+ * courant, bloque par l'appel claude) et doit donc passer par TelegramSenderRegistry.
+ * getDefaultBotSender() plutot que sender() : sender() renvoie un ContextAwareTelegramSender
+ * qui resout via un ThreadLocal (CurrentTelegramBotContext) lie uniquement au thread de
+ * traitement de l'update Telegram entrant - meme piege deja rencontre et corrige dans
+ * RecurringTaskNotifier (memoire projet "phase7_scheduler_implementation").
  */
 @TelegramController
 @RequiredArgsConstructor
@@ -83,6 +96,9 @@ public class AgentVpsTelegramController {
      */
     static final String CHAT_PROCESSING_PLACEHOLDER = "Message recu, je m'en occupe...";
 
+    /** Intervalle de relance du heartbeat "typing..." pendant un appel claude (voir point 4 du javadoc). */
+    private static final long TYPING_HEARTBEAT_INTERVAL_SECONDS = 4;
+
     /** Format d'affichage d'une date/heure de tache ponctuelle (voir showTask/listTasks). */
     private static final DateTimeFormatter SCHEDULED_AT_DISPLAY_FORMAT =
             DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale.ROOT).withZone(ZoneId.systemDefault());
@@ -94,9 +110,30 @@ public class AgentVpsTelegramController {
     private final RecurringTaskManager recurringTaskManager;
     private final RecurringTaskCreationWizard recurringTaskWizard;
     private final ObjectProvider<TelegramSender> telegramSenderProvider;
+    private final ObjectProvider<TelegramSenderRegistry> telegramSenderRegistryProvider;
 
     private TelegramSender sender() {
         return telegramSenderProvider.getObject();
+    }
+
+    /**
+     * Demarre le heartbeat "typing..." (voir point 4 du javadoc de la classe) : a annuler dans
+     * tous les cas (finally) une fois l'appel claude termine, succes ou echec.
+     */
+    private ScheduledExecutorService startTypingHeartbeat(Long chatId) {
+        ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "chat-typing-heartbeat");
+            thread.setDaemon(true);
+            return thread;
+        });
+        executor.scheduleAtFixedRate(() -> {
+            try {
+                telegramSenderRegistryProvider.getObject().getDefaultBotSender().sendTyping(chatId);
+            } catch (Exception e) {
+                log.warn("Echec du heartbeat 'typing...' pour chatId={}", chatId, e);
+            }
+        }, TYPING_HEARTBEAT_INTERVAL_SECONDS, TYPING_HEARTBEAT_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        return executor;
     }
 
     // ---------------------------------------------------------------- /projet
@@ -518,12 +555,15 @@ public class AgentVpsTelegramController {
 
             sender().sendTyping(chatId);
             TelegramMessageReference placeholder = sender().sendMessageAndGetReference(chatId, CHAT_PROCESSING_PLACEHOLDER);
+            ScheduledExecutorService typingHeartbeat = startTypingHeartbeat(chatId);
             try {
                 ClaudeCliResult result = chatService.sendMessage(active, text);
                 sender().editMessage(chatId, placeholder.getMessageId(), result.getResult());
             } catch (ClaudeCliException e) {
                 log.error("Echec de l'appel claude pour le projet '{}'", active.getName(), e);
                 sender().editMessage(chatId, placeholder.getMessageId(), "Erreur lors de l'appel a Claude : " + e.getMessage());
+            } finally {
+                typingHeartbeat.shutdownNow();
             }
         } finally {
             MDC.remove("project");

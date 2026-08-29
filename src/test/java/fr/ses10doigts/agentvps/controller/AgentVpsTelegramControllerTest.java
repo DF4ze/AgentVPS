@@ -22,6 +22,7 @@ import fr.ses10doigts.agentvps.service.RecurringTaskService;
 import fr.ses10doigts.telegrambots.model.TelegramMessageReference;
 import fr.ses10doigts.telegrambots.model.TelegramUpdateContext;
 import fr.ses10doigts.telegrambots.service.sender.TelegramSender;
+import fr.ses10doigts.telegrambots.service.sender.TelegramSenderRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -69,14 +70,26 @@ class AgentVpsTelegramControllerTest {
     @Mock
     private ObjectProvider<TelegramSender> telegramSenderProvider;
 
+    @Mock
+    private TelegramSenderRegistry telegramSenderRegistry;
+
+    @Mock
+    private ObjectProvider<TelegramSenderRegistry> telegramSenderRegistryProvider;
+
     private AgentVpsTelegramController controller;
 
     @BeforeEach
     void setUp() {
         lenient().when(telegramSenderProvider.getObject()).thenReturn(telegramSender);
+        // Utilise uniquement par le heartbeat "typing..." en tache de fond (voir point 4 du
+        // javadoc de AgentVpsTelegramController) : jamais exerce dans ces tests synchrones
+        // (l'appel a chatService.sendMessage mocke revient bien avant le premier declenchement
+        // du heartbeat, 4s plus tard), lenient() evite donc une UnnecessaryStubbingException.
+        lenient().when(telegramSenderRegistryProvider.getObject()).thenReturn(telegramSenderRegistry);
+        lenient().when(telegramSenderRegistry.getDefaultBotSender()).thenReturn(telegramSender);
         controller = new AgentVpsTelegramController(
                 projectService, onboardingService, chatService, recurringTaskService, recurringTaskManager,
-                recurringTaskWizard, telegramSenderProvider);
+                recurringTaskWizard, telegramSenderProvider, telegramSenderRegistryProvider);
     }
 
     // ---------------------------------------------------------------- /projet
