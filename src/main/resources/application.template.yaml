@@ -77,6 +77,17 @@ agentvps:
     # PAS via --append-system-prompt) - voir ClaudeCliProperties.reinforcementEveryMessages.
     # Le premier message d'une conversation est toujours renforce, independamment de ce seuil.
     reinforcement-every-messages: ${AGENTVPS_CLAUDE_REINFORCEMENT_EVERY_MESSAGES:10}
+  recurring-tasks:
+    # Roadmap Phase 7 (taches recurrentes) : execution planifiee de scripts dans le
+    # repertoire de travail d'un projet (voir RecurringTaskScheduler). Delai maximum
+    # avant destruction forcee du process d'un script en cours.
+    timeout-seconds: ${AGENTVPS_RECURRING_TASKS_TIMEOUT_SECONDS:120}
+    # Taille du pool de threads dedie a la planification/execution des taches recurrentes.
+    scheduler-pool-size: ${AGENTVPS_RECURRING_TASKS_SCHEDULER_POOL_SIZE:4}
+    # Identifiant de chat Telegram (numerique) recevant les notifications automatiques
+    # (voir RecurringTaskNotifier) - typiquement le meme identifiant que
+    # telegram.bots[0].security.allowed-user-ids[0]. Vide = notifications desactivees.
+    notification-chat-id: ${AGENTVPS_RECURRING_TASKS_NOTIFICATION_CHAT_ID:}
   workspace:
     # Dossier partage (memoires/doc inter-projets) et dossier des projets
     # (un sous-dossier par projet, avec son propre CLAUDE.md), voir roadmap

@@ -2,13 +2,21 @@ package fr.ses10doigts.agentvps.controller;
 
 import fr.ses10doigts.agentvps.model.ClaudeCliResult;
 import fr.ses10doigts.agentvps.model.Conversation;
+import fr.ses10doigts.agentvps.model.NotificationPolicy;
 import fr.ses10doigts.agentvps.model.Project;
 import fr.ses10doigts.agentvps.model.ProjectStatus;
+import fr.ses10doigts.agentvps.model.RecurringTask;
+import fr.ses10doigts.agentvps.model.RecurringTaskRunOutcome;
+import fr.ses10doigts.agentvps.model.RecurringTaskStatus;
 import fr.ses10doigts.agentvps.service.ChatService;
 import fr.ses10doigts.agentvps.service.ClaudeCliException;
 import fr.ses10doigts.agentvps.service.ProjectException;
 import fr.ses10doigts.agentvps.service.ProjectOnboardingService;
 import fr.ses10doigts.agentvps.service.ProjectService;
+import fr.ses10doigts.agentvps.service.RecurringTaskCreationWizard;
+import fr.ses10doigts.agentvps.service.RecurringTaskException;
+import fr.ses10doigts.agentvps.service.RecurringTaskManager;
+import fr.ses10doigts.agentvps.service.RecurringTaskService;
 import fr.ses10doigts.telegrambots.model.TelegramUpdateContext;
 import fr.ses10doigts.telegrambots.service.poller.handler.annot.Chat;
 import fr.ses10doigts.telegrambots.service.poller.handler.annot.Command;
@@ -59,6 +67,9 @@ public class AgentVpsTelegramController {
     private final ProjectService projectService;
     private final ProjectOnboardingService onboardingService;
     private final ChatService chatService;
+    private final RecurringTaskService recurringTaskService;
+    private final RecurringTaskManager recurringTaskManager;
+    private final RecurringTaskCreationWizard recurringTaskWizard;
     private final ObjectProvider<TelegramSender> telegramSenderProvider;
 
     private TelegramSender sender() {
@@ -271,6 +282,181 @@ public class AgentVpsTelegramController {
         return label + " (" + shortSessionId + "..., " + lastUsed + ")";
     }
 
+    // ----------------------------------------------------------------- /tache
+
+    @Command(value = "/tache", description = "Gerer les taches recurrentes (list, show <nom>, new ..., enable/disable/delete/run <nom>)")
+    public void tache(TelegramUpdateContext context) {
+        Long chatId = context.getChatId();
+        MDC.put("chatId", String.valueOf(chatId));
+        try {
+            List<String> args = context.getArgs();
+
+            if (args.isEmpty()) {
+                listTasks(chatId);
+                return;
+            }
+
+            String sub = args.getFirst().toLowerCase(Locale.ROOT);
+            switch (sub) {
+                case "list" -> listTasks(chatId);
+                case "show" -> showTask(chatId, joinFrom(args, 1));
+                case "new" -> startTaskWizard(chatId);
+                case "enable" -> enableTask(chatId, joinFrom(args, 1));
+                case "disable" -> disableTask(chatId, joinFrom(args, 1));
+                case "delete" -> deleteTask(chatId, joinFrom(args, 1));
+                case "run" -> runTask(chatId, joinFrom(args, 1));
+                default -> sender().sendMessage(chatId,
+                        "Sous-commande inconnue. Utilise /tache list, show <nom>, new ..., enable/disable/delete/run <nom>.");
+            }
+        } finally {
+            MDC.remove("chatId");
+        }
+    }
+
+    private void listTasks(Long chatId) {
+        List<RecurringTask> tasks = recurringTaskService.listTasks();
+        if (tasks.isEmpty()) {
+            sender().sendMessage(chatId, "Aucune tache recurrente pour l'instant. Utilise /tache new pour en creer une.");
+            return;
+        }
+
+        StringBuilder sb = new StringBuilder("Taches recurrentes :\n");
+        for (RecurringTask task : tasks) {
+            boolean disabled = task.getStatus() == RecurringTaskStatus.DISABLED;
+            sb.append(disabled ? "  " : "> ").append(task.getName());
+            if (disabled) {
+                sb.append(" (desactivee)");
+            }
+            sb.append(" - ").append(task.getLastRunStatus() != null
+                    ? "dernier run : " + task.getLastRunStatus()
+                    : "jamais execute");
+            sb.append('\n');
+        }
+        sender().sendMessage(chatId, sb.toString().trim());
+    }
+
+    private void showTask(Long chatId, String rawName) {
+        if (rawName == null || rawName.isBlank()) {
+            sender().sendMessage(chatId, "Usage : /tache show <nom>");
+            return;
+        }
+        try {
+            RecurringTask task = recurringTaskService.getTask(rawName);
+            StringBuilder sb = new StringBuilder();
+            sb.append("Tache '").append(task.getName()).append("'\n");
+            sb.append("Projet : ").append(task.getProjectName()).append('\n');
+            sb.append("Commande : ").append(task.getCommand()).append('\n');
+            sb.append("Cron : ").append(task.getCronExpression()).append('\n');
+            sb.append("Statut : ").append(task.getStatus() == RecurringTaskStatus.ACTIVE ? "active" : "desactivee").append('\n');
+            sb.append("Notification : ").append(describePolicy(task.getNotificationPolicy())).append('\n');
+            if (task.getDescription() != null && !task.getDescription().isBlank()) {
+                sb.append("Description : ").append(task.getDescription()).append('\n');
+            }
+            sb.append('\n');
+            if (task.getLastRunAt() == null) {
+                sb.append("Aucun run pour l'instant.");
+            } else {
+                sb.append("Dernier run (").append(task.getLastRunAt().truncatedTo(ChronoUnit.MINUTES)).append(") : ")
+                        .append(task.getLastRunStatus());
+                if (task.getLastExitCode() != null) {
+                    sb.append(" (code ").append(task.getLastExitCode()).append(')');
+                }
+                String detail = task.getLastErrorMessage() != null ? task.getLastErrorMessage() : task.getLastOutputSummary();
+                if (detail != null && !detail.isBlank()) {
+                    sb.append('\n').append(detail);
+                }
+            }
+            sender().sendMessage(chatId, sb.toString());
+        } catch (RecurringTaskException e) {
+            sender().sendMessage(chatId, e.getMessage());
+        }
+    }
+
+    /**
+     * "/tache new" ne prend plus d'arguments positionnels (trop rebutant, en particulier
+     * taper une expression cron a la main - demande de Clem le 29/08/2026). Lance a la
+     * place l'assistant conversationnel : voir RecurringTaskCreationWizard, et
+     * l'interception faite dans chat() ci-dessous tant qu'une session est active.
+     */
+    private void startTaskWizard(Long chatId) {
+        if (recurringTaskWizard.isActive(chatId)) {
+            sender().sendMessage(chatId,
+                    "Une creation de tache est deja en cours. Reponds a la question precedente, "
+                            + "ou tape \"annuler\" pour recommencer.");
+            return;
+        }
+        sender().sendMessage(chatId, recurringTaskWizard.start(chatId));
+    }
+
+    private void enableTask(Long chatId, String rawName) {
+        if (rawName == null || rawName.isBlank()) {
+            sender().sendMessage(chatId, "Usage : /tache enable <nom>");
+            return;
+        }
+        try {
+            RecurringTask task = recurringTaskManager.enable(rawName);
+            sender().sendMessage(chatId, "Tache '" + task.getName() + "' activee.");
+        } catch (RecurringTaskException e) {
+            sender().sendMessage(chatId, e.getMessage());
+        }
+    }
+
+    private void disableTask(Long chatId, String rawName) {
+        if (rawName == null || rawName.isBlank()) {
+            sender().sendMessage(chatId, "Usage : /tache disable <nom>");
+            return;
+        }
+        try {
+            RecurringTask task = recurringTaskManager.disable(rawName);
+            sender().sendMessage(chatId, "Tache '" + task.getName() + "' desactivee.");
+        } catch (RecurringTaskException e) {
+            sender().sendMessage(chatId, e.getMessage());
+        }
+    }
+
+    private void deleteTask(Long chatId, String rawName) {
+        if (rawName == null || rawName.isBlank()) {
+            sender().sendMessage(chatId, "Usage : /tache delete <nom>");
+            return;
+        }
+        try {
+            recurringTaskManager.deleteTask(rawName);
+            sender().sendMessage(chatId, "Tache '" + rawName + "' supprimee.");
+        } catch (RecurringTaskException e) {
+            sender().sendMessage(chatId, e.getMessage());
+        }
+    }
+
+    private void runTask(Long chatId, String rawName) {
+        if (rawName == null || rawName.isBlank()) {
+            sender().sendMessage(chatId, "Usage : /tache run <nom>");
+            return;
+        }
+        try {
+            sender().sendTyping(chatId);
+            RecurringTaskRunOutcome outcome = recurringTaskManager.runNow(rawName);
+            StringBuilder sb = new StringBuilder("Tache '" + rawName + "' executee : " + outcome.status());
+            if (outcome.exitCode() != null) {
+                sb.append(" (code ").append(outcome.exitCode()).append(')');
+            }
+            String detail = outcome.errorMessage() != null ? outcome.errorMessage() : outcome.outputSummary();
+            if (detail != null && !detail.isBlank()) {
+                sb.append('\n').append(detail);
+            }
+            sender().sendMessage(chatId, sb.toString());
+        } catch (RecurringTaskException e) {
+            sender().sendMessage(chatId, "Impossible d'executer la tache : " + e.getMessage());
+        }
+    }
+
+    private static String describePolicy(NotificationPolicy policy) {
+        return switch (policy) {
+            case ALWAYS -> "toujours";
+            case ON_ISSUE -> "en cas de souci";
+            case NEVER -> "jamais";
+        };
+    }
+
     // ------------------------------------------------------------------ @Chat
 
     @Chat
@@ -283,6 +469,11 @@ public class AgentVpsTelegramController {
 
         MDC.put("chatId", String.valueOf(chatId));
         try {
+            if (recurringTaskWizard.isActive(chatId)) {
+                sender().sendMessage(chatId, recurringTaskWizard.handleReply(chatId, text));
+                return;
+            }
+
             Optional<Project> activeOpt = projectService.getActiveProject();
             if (activeOpt.isEmpty()) {
                 handleChatWithoutActiveProject(chatId);

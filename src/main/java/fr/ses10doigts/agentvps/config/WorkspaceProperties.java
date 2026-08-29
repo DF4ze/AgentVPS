@@ -35,4 +35,14 @@ public class WorkspaceProperties {
     public Path storeFile() {
         return rootDirPath().resolve("projects-store.json");
     }
+
+    /**
+     * Fichier JSON de persistance des taches recurrentes (roadmap Phase 7, voir
+     * RecurringTaskStore) - fichier separe de storeFile() : cycle de vie et frequence
+     * d'ecriture differents (un run planifie peut ecrire bien plus souvent qu'une
+     * mutation de projet/conversation).
+     */
+    public Path recurringTasksStoreFile() {
+        return rootDirPath().resolve("recurring-tasks-store.json");
+    }
 }

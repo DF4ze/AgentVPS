@@ -2,13 +2,22 @@ package fr.ses10doigts.agentvps.controller;
 
 import fr.ses10doigts.agentvps.model.ClaudeCliResult;
 import fr.ses10doigts.agentvps.model.Conversation;
+import fr.ses10doigts.agentvps.model.NotificationPolicy;
 import fr.ses10doigts.agentvps.model.Project;
 import fr.ses10doigts.agentvps.model.ProjectStatus;
+import fr.ses10doigts.agentvps.model.RecurringTask;
+import fr.ses10doigts.agentvps.model.RecurringTaskRunOutcome;
+import fr.ses10doigts.agentvps.model.RecurringTaskStatus;
+import fr.ses10doigts.agentvps.model.RunStatus;
 import fr.ses10doigts.agentvps.service.ChatService;
 import fr.ses10doigts.agentvps.service.ClaudeCliException;
 import fr.ses10doigts.agentvps.service.ProjectException;
 import fr.ses10doigts.agentvps.service.ProjectOnboardingService;
 import fr.ses10doigts.agentvps.service.ProjectService;
+import fr.ses10doigts.agentvps.service.RecurringTaskCreationWizard;
+import fr.ses10doigts.agentvps.service.RecurringTaskException;
+import fr.ses10doigts.agentvps.service.RecurringTaskManager;
+import fr.ses10doigts.agentvps.service.RecurringTaskService;
 import fr.ses10doigts.telegrambots.model.TelegramUpdateContext;
 import fr.ses10doigts.telegrambots.service.sender.TelegramSender;
 import org.junit.jupiter.api.BeforeEach;
@@ -42,6 +51,15 @@ class AgentVpsTelegramControllerTest {
     private ChatService chatService;
 
     @Mock
+    private RecurringTaskService recurringTaskService;
+
+    @Mock
+    private RecurringTaskManager recurringTaskManager;
+
+    @Mock
+    private RecurringTaskCreationWizard recurringTaskWizard;
+
+    @Mock
     private TelegramSender telegramSender;
 
     @Mock
@@ -52,7 +70,9 @@ class AgentVpsTelegramControllerTest {
     @BeforeEach
     void setUp() {
         lenient().when(telegramSenderProvider.getObject()).thenReturn(telegramSender);
-        controller = new AgentVpsTelegramController(projectService, onboardingService, chatService, telegramSenderProvider);
+        controller = new AgentVpsTelegramController(
+                projectService, onboardingService, chatService, recurringTaskService, recurringTaskManager,
+                recurringTaskWizard, telegramSenderProvider);
     }
 
     // ---------------------------------------------------------------- /projet
@@ -274,6 +294,18 @@ class AgentVpsTelegramControllerTest {
     }
 
     @Test
+    void chatRoutesToTheWizardWhileACreationSessionIsActiveInsteadOfCallingClaude() {
+        when(recurringTaskWizard.isActive(10L)).thenReturn(true);
+        when(recurringTaskWizard.handleReply(10L, "healthcheck")).thenReturn("Quelle commande faut-il executer ?");
+
+        controller.chat(context(10L, "healthcheck", List.of()));
+
+        verify(telegramSender).sendMessage(10L, "Quelle commande faut-il executer ?");
+        verify(chatService, never()).sendMessage(any(), any());
+        verify(projectService, never()).getActiveProject();
+    }
+
+    @Test
     void chatWithActiveProjectDelegatesToChatServiceAndRepliesWithResult() {
         // Le choix --resume vs nouvelle conversation, l'enregistrement de la conversation
         // et le compteur de renforcement periodique sont geres par ChatService (voir
@@ -341,6 +373,103 @@ class AgentVpsTelegramControllerTest {
         verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("pas authentifie"));
     }
 
+    // ------------------------------------------------------------------ /tache
+
+    @Test
+    void tacheWithoutArgsAndNoTasksShowsHint() {
+        when(recurringTaskService.listTasks()).thenReturn(List.of());
+
+        controller.tache(context(10L, "/tache", List.of()));
+
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("/tache new"));
+    }
+
+    @Test
+    void tacheListShowsStatusAndLastRun() {
+        when(recurringTaskService.listTasks()).thenReturn(List.of(
+                recurringTask("healthcheck", RecurringTaskStatus.ACTIVE, RunStatus.OK),
+                recurringTask("vieille-tache", RecurringTaskStatus.DISABLED, null)
+        ));
+
+        controller.tache(context(10L, "/tache list", List.of("list")));
+
+        verify(telegramSender).sendMessage(eq(10L), eq(
+                "Taches recurrentes :\n> healthcheck - dernier run : OK\n  vieille-tache (desactivee) - jamais execute"
+        ));
+    }
+
+    @Test
+    void tacheNewStartsTheCreationWizard() {
+        when(recurringTaskWizard.isActive(10L)).thenReturn(false);
+        when(recurringTaskWizard.start(10L)).thenReturn("Quel nom veux-tu lui donner ?");
+
+        controller.tache(context(10L, "/tache new", List.of("new")));
+
+        verify(recurringTaskWizard).start(10L);
+        verify(telegramSender).sendMessage(10L, "Quel nom veux-tu lui donner ?");
+    }
+
+    @Test
+    void tacheNewWhenWizardAlreadyActiveDoesNotRestartIt() {
+        when(recurringTaskWizard.isActive(10L)).thenReturn(true);
+
+        controller.tache(context(10L, "/tache new", List.of("new")));
+
+        verify(recurringTaskWizard, never()).start(any());
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("deja en cours"));
+    }
+
+    @Test
+    void tacheEnableReportsSuccess() {
+        when(recurringTaskManager.enable("healthcheck"))
+                .thenReturn(recurringTask("healthcheck", RecurringTaskStatus.ACTIVE, null));
+
+        controller.tache(context(10L, "/tache enable healthcheck", List.of("enable", "healthcheck")));
+
+        verify(telegramSender).sendMessage(10L, "Tache 'healthcheck' activee.");
+    }
+
+    @Test
+    void tacheDisableReportsSuccess() {
+        when(recurringTaskManager.disable("healthcheck"))
+                .thenReturn(recurringTask("healthcheck", RecurringTaskStatus.DISABLED, null));
+
+        controller.tache(context(10L, "/tache disable healthcheck", List.of("disable", "healthcheck")));
+
+        verify(telegramSender).sendMessage(10L, "Tache 'healthcheck' desactivee.");
+    }
+
+    @Test
+    void tacheDeleteReportsSuccess() {
+        controller.tache(context(10L, "/tache delete healthcheck", List.of("delete", "healthcheck")));
+
+        verify(recurringTaskManager).deleteTask("healthcheck");
+        verify(telegramSender).sendMessage(10L, "Tache 'healthcheck' supprimee.");
+    }
+
+    @Test
+    void tacheRunSendsTypingAndReportsOutcome() {
+        when(recurringTaskManager.runNow("healthcheck"))
+                .thenReturn(new RecurringTaskRunOutcome(RunStatus.WARNING, 1, "1 unite systemd en echec", null));
+
+        controller.tache(context(10L, "/tache run healthcheck", List.of("run", "healthcheck")));
+
+        verify(telegramSender).sendTyping(10L);
+        verify(telegramSender).sendMessage(eq(10L), eq(
+                "Tache 'healthcheck' executee : WARNING (code 1)\n1 unite systemd en echec"
+        ));
+    }
+
+    @Test
+    void tacheRunReportsExecutionFailure() {
+        when(recurringTaskManager.runNow("healthcheck"))
+                .thenThrow(new RecurringTaskException("Aucune tache recurrente nommee 'healthcheck'"));
+
+        controller.tache(context(10L, "/tache run healthcheck", List.of("run", "healthcheck")));
+
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("Impossible d'executer la tache"));
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private static TelegramUpdateContext context(Long chatId, String text, List<String> args) {
@@ -369,5 +498,18 @@ class AgentVpsTelegramControllerTest {
         project.setWorkingDirectory("/home/agentvps/AgentVPS/projects/" + name);
         project.setCurrentSessionId(currentSessionId);
         return project;
+    }
+
+    private static RecurringTask recurringTask(String name, RecurringTaskStatus status, RunStatus lastRunStatus) {
+        RecurringTask task = new RecurringTask();
+        task.setName(name);
+        task.setProjectName("maintenance");
+        task.setCommand("./health_check.sh");
+        task.setCronExpression("0 0 6 * * *");
+        task.setStatus(status);
+        task.setNotificationPolicy(NotificationPolicy.ON_ISSUE);
+        task.setCreatedAt(Instant.now());
+        task.setLastRunStatus(lastRunStatus);
+        return task;
     }
 }
