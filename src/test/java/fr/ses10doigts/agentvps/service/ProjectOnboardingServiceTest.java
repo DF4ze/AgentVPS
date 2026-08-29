@@ -49,7 +49,7 @@ class ProjectOnboardingServiceTest {
         when(claudeCliService.call(any(), isNull(), eq(Path.of(project.getWorkingDirectory())), any()))
                 .thenReturn(claudeResult);
 
-        Conversation conversation = new Conversation("session-1", Instant.now(), Instant.now(), "Mise en place initiale");
+        Conversation conversation = new Conversation("session-1", Instant.now(), Instant.now(), "Mise en place initiale", 0);
         when(projectService.recordConversationStart("mon-projet", "session-1", "Mise en place initiale"))
                 .thenReturn(conversation);
 

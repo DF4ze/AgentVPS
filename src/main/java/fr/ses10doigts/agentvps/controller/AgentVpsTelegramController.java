@@ -4,8 +4,8 @@ import fr.ses10doigts.agentvps.model.ClaudeCliResult;
 import fr.ses10doigts.agentvps.model.Conversation;
 import fr.ses10doigts.agentvps.model.Project;
 import fr.ses10doigts.agentvps.model.ProjectStatus;
+import fr.ses10doigts.agentvps.service.ChatService;
 import fr.ses10doigts.agentvps.service.ClaudeCliException;
-import fr.ses10doigts.agentvps.service.ClaudeCliService;
 import fr.ses10doigts.agentvps.service.ProjectException;
 import fr.ses10doigts.agentvps.service.ProjectOnboardingService;
 import fr.ses10doigts.agentvps.service.ProjectService;
@@ -19,7 +19,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
 
-import java.nio.file.Path;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Locale;
@@ -59,7 +58,7 @@ public class AgentVpsTelegramController {
 
     private final ProjectService projectService;
     private final ProjectOnboardingService onboardingService;
-    private final ClaudeCliService claudeCliService;
+    private final ChatService chatService;
     private final ObjectProvider<TelegramSender> telegramSenderProvider;
 
     private TelegramSender sender() {
@@ -292,16 +291,10 @@ public class AgentVpsTelegramController {
 
             Project active = activeOpt.get();
             MDC.put("project", active.getName());
-            String sessionId = active.getCurrentSessionId();
 
             sender().sendTyping(chatId);
             try {
-                ClaudeCliResult result = claudeCliService.call(text, sessionId, Path.of(active.getWorkingDirectory()));
-                if (sessionId == null) {
-                    projectService.recordConversationStart(active.getName(), result.getSessionId(), null);
-                } else {
-                    projectService.touchConversation(active.getName(), sessionId);
-                }
+                ClaudeCliResult result = chatService.sendMessage(active, text);
                 sender().sendMessage(chatId, result.getResult());
             } catch (ClaudeCliException e) {
                 log.error("Echec de l'appel claude pour le projet '{}'", active.getName(), e);

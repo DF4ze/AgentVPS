@@ -187,7 +187,7 @@ public class ProjectService {
         synchronized (lock) {
             Project project = getProject(name);
             Instant now = Instant.now();
-            Conversation conversation = new Conversation(sessionId, now, now, label);
+            Conversation conversation = new Conversation(sessionId, now, now, label, 0);
             project.getConversations().add(conversation);
             project.setCurrentSessionId(sessionId);
             persist();
@@ -203,6 +203,51 @@ public class ProjectService {
                     .filter(c -> c.getSessionId().equals(sessionId))
                     .findFirst()
                     .ifPresent(c -> c.setLastUsedAt(Instant.now()));
+            persist();
+        }
+    }
+
+    /**
+     * Indique si le renforcement periodique (rappel CLAUDE.md + permissions, injecte en
+     * prefixe du message utilisateur par ChatService) doit etre applique au prochain appel.
+     * Toujours vrai pour le premier message d'une conversation (sessionId null, aucun
+     * historique a diluer). Pour une conversation existante, vrai des que le nombre de
+     * messages ecoules depuis le dernier renforcement atteint le seuil configure
+     * (voir ClaudeCliProperties.reinforcementEveryMessages).
+     *
+     * Lecture seule : ne modifie pas le compteur (voir recordReinforcementOutcome, appele
+     * uniquement apres un appel claude reussi).
+     */
+    public boolean isReinforcementDue(String name, String sessionId, int everyMessages) {
+        if (sessionId == null) {
+            return true;
+        }
+        synchronized (lock) {
+            Project project = getProject(name);
+            return project.getConversations().stream()
+                    .filter(c -> c.getSessionId().equals(sessionId))
+                    .findFirst()
+                    // conversation introuvable (ne devrait pas arriver) : on prefere
+                    // renforcer plutot que de risquer un oubli silencieux.
+                    .map(c -> c.getMessagesSinceReinforcement() + 1 >= everyMessages)
+                    .orElse(true);
+        }
+    }
+
+    /**
+     * A appeler apres un appel claude reussi sur une conversation existante (pas pour le
+     * tout premier message, cf recordConversationStart qui initialise deja le compteur a 0)
+     * pour mettre a jour le compteur de renforcement : remis a 0 si le renforcement vient
+     * d'etre injecte dans ce message, incremente sinon.
+     */
+    public void recordReinforcementOutcome(String name, String sessionId, boolean reinforcementApplied) {
+        synchronized (lock) {
+            Project project = getProject(name);
+            project.getConversations().stream()
+                    .filter(c -> c.getSessionId().equals(sessionId))
+                    .findFirst()
+                    .ifPresent(c -> c.setMessagesSinceReinforcement(
+                            reinforcementApplied ? 0 : c.getMessagesSinceReinforcement() + 1));
             persist();
         }
     }

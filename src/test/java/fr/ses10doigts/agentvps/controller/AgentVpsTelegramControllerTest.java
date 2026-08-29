@@ -4,8 +4,8 @@ import fr.ses10doigts.agentvps.model.ClaudeCliResult;
 import fr.ses10doigts.agentvps.model.Conversation;
 import fr.ses10doigts.agentvps.model.Project;
 import fr.ses10doigts.agentvps.model.ProjectStatus;
+import fr.ses10doigts.agentvps.service.ChatService;
 import fr.ses10doigts.agentvps.service.ClaudeCliException;
-import fr.ses10doigts.agentvps.service.ClaudeCliService;
 import fr.ses10doigts.agentvps.service.ProjectException;
 import fr.ses10doigts.agentvps.service.ProjectOnboardingService;
 import fr.ses10doigts.agentvps.service.ProjectService;
@@ -18,7 +18,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.ObjectProvider;
 
-import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -40,7 +39,7 @@ class AgentVpsTelegramControllerTest {
     private ProjectOnboardingService onboardingService;
 
     @Mock
-    private ClaudeCliService claudeCliService;
+    private ChatService chatService;
 
     @Mock
     private TelegramSender telegramSender;
@@ -53,7 +52,7 @@ class AgentVpsTelegramControllerTest {
     @BeforeEach
     void setUp() {
         lenient().when(telegramSenderProvider.getObject()).thenReturn(telegramSender);
-        controller = new AgentVpsTelegramController(projectService, onboardingService, claudeCliService, telegramSenderProvider);
+        controller = new AgentVpsTelegramController(projectService, onboardingService, chatService, telegramSenderProvider);
     }
 
     // ---------------------------------------------------------------- /projet
@@ -103,7 +102,7 @@ class AgentVpsTelegramControllerTest {
     @Test
     void projetNewCreatesProjectAndSendsFirstOnboardingQuestion() {
         Project created = project("mon-projet", ProjectStatus.ACTIVE, null);
-        Conversation conversation = new Conversation("session-1", Instant.now(), Instant.now(), "Mise en place initiale");
+        Conversation conversation = new Conversation("session-1", Instant.now(), Instant.now(), "Mise en place initiale", 0);
         when(onboardingService.createProjectAndStartOnboarding("Mon Projet"))
                 .thenReturn(new ProjectOnboardingService.OnboardingResult(created, conversation, "A quoi va servir ce projet ?"));
 
@@ -219,8 +218,8 @@ class AgentVpsTelegramControllerTest {
         when(projectService.getActiveProject()).thenReturn(Optional.of(active));
         Instant at = Instant.parse("2026-08-28T16:24:00Z");
         when(projectService.listConversations("mon-projet")).thenReturn(List.of(
-                new Conversation(sessionId1, at, at, "Mise en place initiale"),
-                new Conversation(sessionId2, at, at, null)
+                new Conversation(sessionId1, at, at, "Mise en place initiale", 0),
+                new Conversation(sessionId2, at, at, null, 0)
         ));
 
         controller.conv(context(10L, "/conv list", List.of("list")));
@@ -246,7 +245,7 @@ class AgentVpsTelegramControllerTest {
     @Test
     void convWithNumberSwitchesToThatConversation() {
         when(projectService.getActiveProject()).thenReturn(Optional.of(project("mon-projet", ProjectStatus.ACTIVE, null)));
-        Conversation conversation = new Conversation("session-1", Instant.now(), Instant.now(), "Label");
+        Conversation conversation = new Conversation("session-1", Instant.now(), Instant.now(), "Label", 0);
         when(projectService.switchConversation("mon-projet", 2)).thenReturn(conversation);
 
         controller.conv(context(10L, "/conv 2", List.of("2")));
@@ -271,38 +270,24 @@ class AgentVpsTelegramControllerTest {
         controller.chat(context(10L, "   ", List.of()));
 
         verify(telegramSender, never()).sendMessage(any(), any());
-        verify(claudeCliService, never()).call(any(), any(), any());
+        verify(chatService, never()).sendMessage(any(), any());
     }
 
     @Test
-    void chatWithActiveProjectAndNoCurrentSessionStartsANewConversation() {
-        Project active = project("mon-projet", ProjectStatus.ACTIVE, null);
-        when(projectService.getActiveProject()).thenReturn(Optional.of(active));
-        ClaudeCliResult result = new ClaudeCliResult();
-        result.setSessionId("session-1");
-        result.setResult("Bonjour !");
-        when(claudeCliService.call("Salut", null, Path.of(active.getWorkingDirectory()))).thenReturn(result);
-
-        controller.chat(context(10L, "Salut", List.of()));
-
-        verify(projectService).recordConversationStart("mon-projet", "session-1", null);
-        verify(projectService, never()).touchConversation(any(), any());
-        verify(telegramSender).sendMessage(10L, "Bonjour !");
-    }
-
-    @Test
-    void chatWithActiveProjectAndExistingSessionResumesIt() {
+    void chatWithActiveProjectDelegatesToChatServiceAndRepliesWithResult() {
+        // Le choix --resume vs nouvelle conversation, l'enregistrement de la conversation
+        // et le compteur de renforcement periodique sont geres par ChatService (voir
+        // ChatServiceTest) : le controller se contente de lui transmettre le message et
+        // d'envoyer le resultat, quel que soit l'etat de la conversation courante.
         Project active = project("mon-projet", ProjectStatus.ACTIVE, "session-1");
         when(projectService.getActiveProject()).thenReturn(Optional.of(active));
         ClaudeCliResult result = new ClaudeCliResult();
-        result.setSessionId("session-1");
         result.setResult("Suite...");
-        when(claudeCliService.call("Continue", "session-1", Path.of(active.getWorkingDirectory()))).thenReturn(result);
+        when(chatService.sendMessage(active, "Continue")).thenReturn(result);
 
         controller.chat(context(10L, "Continue", List.of()));
 
-        verify(projectService).touchConversation("mon-projet", "session-1");
-        verify(projectService, never()).recordConversationStart(any(), any(), any());
+        verify(chatService).sendMessage(active, "Continue");
         verify(telegramSender).sendMessage(10L, "Suite...");
     }
 
@@ -310,13 +295,11 @@ class AgentVpsTelegramControllerTest {
     void chatReportsClaudeFailureInsteadOfStayingSilent() {
         Project active = project("mon-projet", ProjectStatus.ACTIVE, "session-1");
         when(projectService.getActiveProject()).thenReturn(Optional.of(active));
-        when(claudeCliService.call(any(), any(), any())).thenThrow(new ClaudeCliException("timeout"));
+        when(chatService.sendMessage(any(), any())).thenThrow(new ClaudeCliException("timeout"));
 
         controller.chat(context(10L, "Salut", List.of()));
 
         verify(telegramSender).sendMessage(10L, "Erreur lors de l'appel a Claude : timeout");
-        verify(projectService, never()).recordConversationStart(any(), any(), any());
-        verify(projectService, never()).touchConversation(any(), any());
     }
 
     @Test
@@ -337,7 +320,7 @@ class AgentVpsTelegramControllerTest {
         Project created = project("default", ProjectStatus.ACTIVE, null);
         when(onboardingService.createProjectAndStartOnboarding(AgentVpsTelegramController.DEFAULT_PROJECT_NAME))
                 .thenReturn(new ProjectOnboardingService.OnboardingResult(
-                        created, new Conversation("session-1", Instant.now(), Instant.now(), "Mise en place initiale"),
+                        created, new Conversation("session-1", Instant.now(), Instant.now(), "Mise en place initiale", 0),
                         "Premiere question ?"));
 
         controller.chat(context(10L, "Salut", List.of()));

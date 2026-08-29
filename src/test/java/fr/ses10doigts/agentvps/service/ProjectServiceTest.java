@@ -150,4 +150,60 @@ class ProjectServiceTest {
         assertThatThrownBy(() -> service.getProject("inconnu"))
                 .isInstanceOf(ProjectException.class);
     }
+
+    // ------------------------------------------------------- renforcement periodique
+
+    @Test
+    void reinforcementIsAlwaysDueForTheFirstMessageOfAConversation() {
+        service.createProject("projet-a");
+
+        assertThat(service.isReinforcementDue("projet-a", null, 10)).isTrue();
+    }
+
+    @Test
+    void reinforcementIsNotDueRightAfterAConversationStarted() {
+        service.createProject("projet-a");
+        service.recordConversationStart("projet-a", "session-1", null);
+
+        assertThat(service.isReinforcementDue("projet-a", "session-1", 10)).isFalse();
+    }
+
+    @Test
+    void reinforcementBecomesDueOnceTheThresholdIsReached() {
+        service.createProject("projet-a");
+        service.recordConversationStart("projet-a", "session-1", null);
+        for (int i = 0; i < 9; i++) {
+            service.recordReinforcementOutcome("projet-a", "session-1", false);
+        }
+
+        assertThat(service.isReinforcementDue("projet-a", "session-1", 10)).isTrue();
+    }
+
+    @Test
+    void recordReinforcementOutcomeResetsTheCounterWhenApplied() {
+        service.createProject("projet-a");
+        service.recordConversationStart("projet-a", "session-1", null);
+        for (int i = 0; i < 9; i++) {
+            service.recordReinforcementOutcome("projet-a", "session-1", false);
+        }
+
+        service.recordReinforcementOutcome("projet-a", "session-1", true);
+
+        assertThat(service.isReinforcementDue("projet-a", "session-1", 10)).isFalse();
+    }
+
+    @Test
+    void reinforcementDefaultsToDueWhenTheConversationCannotBeFound() {
+        service.createProject("projet-a");
+
+        assertThat(service.isReinforcementDue("projet-a", "session-inconnue", 10)).isTrue();
+    }
+
+    @Test
+    void recordReinforcementOutcomeIsANoOpForAnUnknownSessionId() {
+        service.createProject("projet-a");
+
+        // ne doit pas lever d'exception, simplement ne rien trouver a mettre a jour
+        service.recordReinforcementOutcome("projet-a", "session-inconnue", true);
+    }
 }

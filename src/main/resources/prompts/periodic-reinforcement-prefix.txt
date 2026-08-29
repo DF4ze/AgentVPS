@@ -1,0 +1,3 @@
+[Rappel] Le CLAUDE.md du projet est ta seule mémoire durable : si une conclusion, une décision ou une information importante est apparue dans cette conversation et n'y figure pas encore, écris-la maintenant, avant de traiter le message ci-dessous. Rappel aussi : pas de sudo, pas de rm -rf, pas d'accès à ~/.ssh, ~/.claude, ~/.ori — et lance tes commandes autorisées isolément, pas chaînées via ; ou &&.
+
+Message de Clem :

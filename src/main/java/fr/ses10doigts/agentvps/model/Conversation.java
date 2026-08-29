@@ -33,4 +33,14 @@ public class Conversation {
 
     /** Court libelle optionnel (ex. "Mise en place initiale") pour l'affichage dans /projet ... list. */
     private String label;
+
+    /**
+     * Nombre de messages traites sur cette conversation depuis le dernier renforcement
+     * periodique injecte (voir ChatService/ProjectService.isReinforcementDue). Remis a 0
+     * a chaque renforcement, incremente sinon. Le tout premier message d'une conversation
+     * n'a pas encore d'objet Conversation (voir ProjectService.recordConversationStart) :
+     * ce cas est gere directement par ChatService (sessionId encore null), pas par ce
+     * compteur.
+     */
+    private int messagesSinceReinforcement;
 }

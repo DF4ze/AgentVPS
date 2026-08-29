@@ -49,9 +49,9 @@ class JsonProjectStoreRepositoryTest {
         project.setWorkingDirectory(workspaceProperties.projectsDir().resolve("mon-projet").toString());
         project.setCurrentSessionId("session-2");
         project.getConversations().add(new Conversation(
-                "session-1", Instant.parse("2026-08-28T10:00:00Z"), Instant.parse("2026-08-28T10:05:00Z"), "Mise en place initiale"));
+                "session-1", Instant.parse("2026-08-28T10:00:00Z"), Instant.parse("2026-08-28T10:05:00Z"), "Mise en place initiale", 0));
         project.getConversations().add(new Conversation(
-                "session-2", Instant.parse("2026-08-28T11:00:00Z"), Instant.parse("2026-08-28T11:00:00Z"), null));
+                "session-2", Instant.parse("2026-08-28T11:00:00Z"), Instant.parse("2026-08-28T11:00:00Z"), null, 0));
         store.getProjects().put("mon-projet", project);
 
         repository.save(store);

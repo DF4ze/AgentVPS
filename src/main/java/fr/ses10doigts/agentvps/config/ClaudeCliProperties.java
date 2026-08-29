@@ -79,4 +79,14 @@ public class ClaudeCliProperties {
      * non transmis (ori utilise alors son modele par defaut).
      */
     private String openRouterModel;
+
+    /**
+     * Frequence (en nombre de messages @Chat traites sur une meme conversation) du
+     * renforcement periodique (rappel appuye CLAUDE.md + permissions, injecte en prefixe
+     * du message utilisateur par ChatService - PAS via --append-system-prompt, voir la
+     * memoire projet "prompting_architecture"). Le premier message d'une conversation est
+     * toujours renforce independamment de ce seuil. Valeur de depart proposee (29/08/2026),
+     * a ajuster a l'usage reel.
+     */
+    private int reinforcementEveryMessages = 10;
 }
