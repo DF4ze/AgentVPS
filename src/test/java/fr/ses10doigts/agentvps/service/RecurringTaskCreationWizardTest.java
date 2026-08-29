@@ -11,6 +11,9 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Optional;
 
@@ -184,7 +187,7 @@ class RecurringTaskCreationWizardTest {
 
         String reply = wizard.handleReply(CHAT_ID, "9");
 
-        assertThat(reply).contains("1, 2, 3 ou 4");
+        assertThat(reply).contains("1, 2, 3, 4 ou 5");
     }
 
     @Test
@@ -225,6 +228,95 @@ class RecurringTaskCreationWizardTest {
         String reply = wizard.handleReply(CHAT_ID, "0 0 6 * * *");
 
         assertThat(reply).contains("Recapitulatif").contains("cron personnalise : 0 0 6 * * *");
+    }
+
+    // -------------------------------------------------------- mode ponctuel
+
+    @Test
+    void oneTimeModeShowsTheSubMenu() {
+        goToFrequencyStep();
+
+        String reply = wizard.handleReply(CHAT_ID, "5");
+
+        assertThat(reply).contains("Aujourd'hui").contains("Demain")
+                .contains("semaine prochaine").contains("Une date precise");
+    }
+
+    @Test
+    void invalidOneTimeChoiceIsRejected() {
+        goToFrequencyStep();
+        wizard.handleReply(CHAT_ID, "5");
+
+        String reply = wizard.handleReply(CHAT_ID, "9");
+
+        assertThat(reply).contains("1, 2, 3 ou 4");
+    }
+
+    @Test
+    void oneTimeTomorrowAsksForTimeThenRecaps() {
+        goToFrequencyStep();
+        wizard.handleReply(CHAT_ID, "5");
+
+        String askTime = wizard.handleReply(CHAT_ID, "2");
+        assertThat(askTime).contains("demain");
+
+        String invalid = wizard.handleReply(CHAT_ID, "pas une heure");
+        assertThat(invalid).contains("Format invalide");
+
+        String reply = wizard.handleReply(CHAT_ID, "09:00");
+
+        LocalDate tomorrow = LocalDate.now(ZoneId.systemDefault()).plusDays(1);
+        String expectedDate = tomorrow.format(DateTimeFormatter.ofPattern("dd/MM/yyyy"));
+        assertThat(reply).contains("Recapitulatif").contains("une seule fois, le " + expectedDate + " 09:00");
+    }
+
+    @Test
+    void oneTimeNextWeekPromptIncludesTheComputedDate() {
+        goToFrequencyStep();
+        wizard.handleReply(CHAT_ID, "5");
+
+        String reply = wizard.handleReply(CHAT_ID, "3");
+
+        LocalDate nextWeek = LocalDate.now(ZoneId.systemDefault()).plusWeeks(1);
+        String expectedDate = nextWeek.format(DateTimeFormatter.ofPattern("dd/MM/yyyy"));
+        assertThat(reply).contains("A quelle heure le " + expectedDate);
+    }
+
+    @Test
+    void oneTimeExplicitDateValidatesFormatAndRejectsPastDates() {
+        goToFrequencyStep();
+        wizard.handleReply(CHAT_ID, "5");
+        wizard.handleReply(CHAT_ID, "4");
+
+        String invalidFormat = wizard.handleReply(CHAT_ID, "pas une date");
+        assertThat(invalidFormat).contains("Format invalide");
+
+        String pastDate = wizard.handleReply(CHAT_ID, "01/01/2020 10:00");
+        assertThat(pastDate).contains("deja passees");
+
+        String reply = wizard.handleReply(CHAT_ID, "05/09/2099 14:30");
+
+        assertThat(reply).contains("Recapitulatif").contains("une seule fois, le 05/09/2099 14:30");
+    }
+
+    @Test
+    void confirmingAOneTimeTaskCallsCreateOneTimeTaskInsteadOfCreateTask() {
+        goToFrequencyStep();
+        wizard.handleReply(CHAT_ID, "5");
+        wizard.handleReply(CHAT_ID, "4");
+        wizard.handleReply(CHAT_ID, "05/09/2099 14:30");
+        RecurringTask created = new RecurringTask();
+        created.setName("healthcheck");
+        when(recurringTaskManager.createOneTimeTask(
+                eq("healthcheck"), eq("maintenance"), eq("./health_check.sh"), any(Instant.class),
+                eq(NotificationPolicy.ON_ISSUE), any()))
+                .thenReturn(created);
+
+        String reply = wizard.handleReply(CHAT_ID, "oui");
+
+        assertThat(reply).contains("healthcheck' creee et active");
+        assertThat(wizard.isActive(CHAT_ID)).isFalse();
+        verify(recurringTaskManager, never()).createTask(any(), any(), any(), any(), any(), any());
     }
 
     // ------------------------------------------------------------- confirm

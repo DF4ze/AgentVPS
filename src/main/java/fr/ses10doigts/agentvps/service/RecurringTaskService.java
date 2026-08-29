@@ -4,6 +4,7 @@ import fr.ses10doigts.agentvps.model.NotificationPolicy;
 import fr.ses10doigts.agentvps.model.RecurringTask;
 import fr.ses10doigts.agentvps.model.RecurringTaskStatus;
 import fr.ses10doigts.agentvps.model.RecurringTaskStore;
+import fr.ses10doigts.agentvps.model.RecurringTaskTriggerType;
 import fr.ses10doigts.agentvps.model.RunStatus;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.support.CronExpression;
@@ -59,13 +60,44 @@ public class RecurringTaskService {
     }
 
     /**
-     * Cree une nouvelle tache recurrente, active par defaut. Le projet associe doit deja
-     * exister (voir ProjectService.getProject) : une tache recurrente n'a pas de sens sans
-     * repertoire de travail. N'effectue aucune planification live - voir RecurringTaskManager.
+     * Cree une nouvelle tache recurrente (declenchement CRON), active par defaut. Le
+     * projet associe doit deja exister (voir ProjectService.getProject) : une tache
+     * recurrente n'a pas de sens sans repertoire de travail. N'effectue aucune
+     * planification live - voir RecurringTaskManager.
      */
     public RecurringTask createTask(String rawName, String projectName, String command,
                                      String cronExpression, NotificationPolicy notificationPolicy,
                                      String description) {
+        String validatedCron = validateCron(cronExpression);
+        return createTaskInternal(rawName, projectName, command, RecurringTaskTriggerType.CRON,
+                validatedCron, null, notificationPolicy, description);
+    }
+
+    /**
+     * Cree une nouvelle tache ponctuelle (declenchement ONE_TIME, ajoute le 29/08/2026 -
+     * demande Clem), active par defaut : s'execute une seule fois a scheduledAt, puis
+     * repasse automatiquement a DISABLED (voir RecurringTaskScheduler.executeTask). Meme
+     * validations que createTask (nom unique, commande non vide, projet existant), plus
+     * scheduledAt obligatoire et strictement dans le futur - une tache ponctuelle deja
+     * passee au moment de sa creation n'aurait aucun sens.
+     */
+    public RecurringTask createOneTimeTask(String rawName, String projectName, String command,
+                                            Instant scheduledAt, NotificationPolicy notificationPolicy,
+                                            String description) {
+        if (scheduledAt == null) {
+            throw new RecurringTaskException("La date d'execution ne peut pas etre vide");
+        }
+        if (!scheduledAt.isAfter(Instant.now())) {
+            throw new RecurringTaskException("La date d'execution doit etre dans le futur");
+        }
+        return createTaskInternal(rawName, projectName, command, RecurringTaskTriggerType.ONE_TIME,
+                null, scheduledAt, notificationPolicy, description);
+    }
+
+    private RecurringTask createTaskInternal(String rawName, String projectName, String command,
+                                              RecurringTaskTriggerType triggerType, String cronExpression,
+                                              Instant scheduledAt, NotificationPolicy notificationPolicy,
+                                              String description) {
         synchronized (lock) {
             String slug = slugify(rawName);
             if (store().getTasks().containsKey(slug)) {
@@ -82,21 +114,24 @@ public class RecurringTaskService {
                         "Projet '" + projectName + "' introuvable (cree-le d'abord avec /projet new)", e);
             }
 
-            String validatedCron = validateCron(cronExpression);
-
             RecurringTask task = new RecurringTask();
             task.setName(slug);
             task.setDescription(description);
             task.setProjectName(projectName);
             task.setCommand(command.trim());
-            task.setCronExpression(validatedCron);
+            task.setTriggerType(triggerType);
+            task.setCronExpression(cronExpression);
+            task.setScheduledAt(scheduledAt);
             task.setStatus(RecurringTaskStatus.ACTIVE);
             task.setNotificationPolicy(notificationPolicy != null ? notificationPolicy : NotificationPolicy.ON_ISSUE);
             task.setCreatedAt(Instant.now());
 
             store().getTasks().put(slug, task);
             persist();
-            log.info("Tache recurrente '{}' creee (projet={}, cron={})", slug, projectName, validatedCron);
+            log.info("Tache recurrente '{}' creee (projet={}, {})", slug, projectName,
+                    triggerType == RecurringTaskTriggerType.ONE_TIME
+                            ? "une fois le " + scheduledAt
+                            : "cron=" + cronExpression);
             return task;
         }
     }

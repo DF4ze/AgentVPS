@@ -6,6 +6,7 @@ import fr.ses10doigts.agentvps.model.RecurringTask;
 import fr.ses10doigts.agentvps.model.RecurringTaskRunOutcome;
 import fr.ses10doigts.agentvps.model.RunStatus;
 import fr.ses10doigts.telegrambots.service.sender.TelegramSender;
+import fr.ses10doigts.telegrambots.service.sender.TelegramSenderRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -21,11 +22,20 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+/**
+ * Depuis le 29/08/2026 (voir RecurringTaskNotifier), le notifier passe par
+ * TelegramSenderRegistry.getDefaultBotSender() plutot que par le bean TelegramSender
+ * (ContextAwareTelegramSender) injecte ailleurs dans le code - le bean TelegramSender lui-
+ * meme n'est donc plus mocke ici, seul son "sender par defaut" obtenu via le registry l'est.
+ */
 @ExtendWith(MockitoExtension.class)
 class RecurringTaskNotifierTest {
 
     @Mock
-    private ObjectProvider<TelegramSender> telegramSenderProvider;
+    private ObjectProvider<TelegramSenderRegistry> telegramSenderRegistryProvider;
+
+    @Mock
+    private TelegramSenderRegistry telegramSenderRegistry;
 
     @Mock
     private TelegramSender telegramSender;
@@ -37,8 +47,18 @@ class RecurringTaskNotifierTest {
     void setUp() {
         properties = new RecurringTaskProperties();
         properties.setNotificationChatId("1595302518");
-        notifier = new RecurringTaskNotifier(telegramSenderProvider, properties);
-        lenient().when(telegramSenderProvider.getIfAvailable()).thenReturn(telegramSender);
+        notifier = new RecurringTaskNotifier(telegramSenderRegistryProvider, properties);
+        lenient().when(telegramSenderRegistryProvider.getIfAvailable()).thenReturn(telegramSenderRegistry);
+        lenient().when(telegramSenderRegistry.getDefaultBotSender()).thenReturn(telegramSender);
+    }
+
+    @Test
+    void whenTelegramSenderRegistryUnavailableSkipsSilentlyWithoutThrowing() {
+        when(telegramSenderRegistryProvider.getIfAvailable()).thenReturn(null);
+
+        notifier.notify(task(NotificationPolicy.ALWAYS), new RecurringTaskRunOutcome(RunStatus.OK, 0, "ok", null));
+
+        verify(telegramSender, never()).sendMessage(anyLong(), anyString());
     }
 
     @Test

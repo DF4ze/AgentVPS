@@ -44,12 +44,24 @@ public class RecurringTask {
     private String command;
 
     /**
+     * Mecanisme de declenchement (ajoute le 29/08/2026 - voir RecurringTaskTriggerType).
+     * Determine lequel de cronExpression / scheduledAt est effectivement utilise.
+     */
+    private RecurringTaskTriggerType triggerType = RecurringTaskTriggerType.CRON;
+
+    /**
      * Expression cron Spring (6 champs : secondes minutes heures jour-du-mois mois
      * jour-de-semaine, ou macro type "@daily"/"@hourly" - voir
      * org.springframework.scheduling.support.CronExpression), validee a la creation
-     * (RecurringTaskService.createTask) avant d'etre acceptee.
+     * (RecurringTaskService.createTask) avant d'etre acceptee. Null si triggerType == ONE_TIME.
      */
     private String cronExpression;
+
+    /**
+     * Instant d'execution unique pour une tache ponctuelle (triggerType == ONE_TIME
+     * uniquement, voir RecurringTaskService.createOneTimeTask) - null pour une tache CRON.
+     */
+    private Instant scheduledAt;
 
     private RecurringTaskStatus status = RecurringTaskStatus.ACTIVE;
 

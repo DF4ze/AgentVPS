@@ -8,6 +8,7 @@ import fr.ses10doigts.agentvps.model.ProjectStatus;
 import fr.ses10doigts.agentvps.model.RecurringTask;
 import fr.ses10doigts.agentvps.model.RecurringTaskRunOutcome;
 import fr.ses10doigts.agentvps.model.RecurringTaskStatus;
+import fr.ses10doigts.agentvps.model.RecurringTaskTriggerType;
 import fr.ses10doigts.agentvps.model.RunStatus;
 import fr.ses10doigts.agentvps.service.ChatService;
 import fr.ses10doigts.agentvps.service.ClaudeCliException;
@@ -18,6 +19,7 @@ import fr.ses10doigts.agentvps.service.RecurringTaskCreationWizard;
 import fr.ses10doigts.agentvps.service.RecurringTaskException;
 import fr.ses10doigts.agentvps.service.RecurringTaskManager;
 import fr.ses10doigts.agentvps.service.RecurringTaskService;
+import fr.ses10doigts.telegrambots.model.TelegramMessageReference;
 import fr.ses10doigts.telegrambots.model.TelegramUpdateContext;
 import fr.ses10doigts.telegrambots.service.sender.TelegramSender;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,6 +30,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.ObjectProvider;
 
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Optional;
 
@@ -313,6 +317,8 @@ class AgentVpsTelegramControllerTest {
         // d'envoyer le resultat, quel que soit l'etat de la conversation courante.
         Project active = project("mon-projet", ProjectStatus.ACTIVE, "session-1");
         when(projectService.getActiveProject()).thenReturn(Optional.of(active));
+        when(telegramSender.sendMessageAndGetReference(10L, AgentVpsTelegramController.CHAT_PROCESSING_PLACEHOLDER))
+                .thenReturn(TelegramMessageReference.builder().chatId(10L).messageId(42).build());
         ClaudeCliResult result = new ClaudeCliResult();
         result.setResult("Suite...");
         when(chatService.sendMessage(active, "Continue")).thenReturn(result);
@@ -320,18 +326,42 @@ class AgentVpsTelegramControllerTest {
         controller.chat(context(10L, "Continue", List.of()));
 
         verify(chatService).sendMessage(active, "Continue");
-        verify(telegramSender).sendMessage(10L, "Suite...");
+        verify(telegramSender).editMessage(10L, 42, "Suite...");
+        verify(telegramSender, never()).sendMessage(eq(10L), any());
+    }
+
+    @Test
+    void chatSendsProcessingPlaceholderBeforeCallingClaude() {
+        // Le place-holder doit partir tout de suite (avant l'appel bloquant a claude -p, jusqu'a
+        // 120s) pour que Clem sache que le bot est bien UP des la reception du message - voir le
+        // point 3 du javadoc de la classe.
+        Project active = project("mon-projet", ProjectStatus.ACTIVE, "session-1");
+        when(projectService.getActiveProject()).thenReturn(Optional.of(active));
+        when(telegramSender.sendMessageAndGetReference(10L, AgentVpsTelegramController.CHAT_PROCESSING_PLACEHOLDER))
+                .thenReturn(TelegramMessageReference.builder().chatId(10L).messageId(99).build());
+        ClaudeCliResult result = new ClaudeCliResult();
+        result.setResult("Reponse");
+        when(chatService.sendMessage(active, "Salut")).thenReturn(result);
+
+        controller.chat(context(10L, "Salut", List.of()));
+
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(telegramSender, chatService);
+        order.verify(telegramSender).sendMessageAndGetReference(10L, AgentVpsTelegramController.CHAT_PROCESSING_PLACEHOLDER);
+        order.verify(chatService).sendMessage(active, "Salut");
+        order.verify(telegramSender).editMessage(10L, 99, "Reponse");
     }
 
     @Test
     void chatReportsClaudeFailureInsteadOfStayingSilent() {
         Project active = project("mon-projet", ProjectStatus.ACTIVE, "session-1");
         when(projectService.getActiveProject()).thenReturn(Optional.of(active));
+        when(telegramSender.sendMessageAndGetReference(eq(10L), any()))
+                .thenReturn(TelegramMessageReference.builder().chatId(10L).messageId(7).build());
         when(chatService.sendMessage(any(), any())).thenThrow(new ClaudeCliException("timeout"));
 
         controller.chat(context(10L, "Salut", List.of()));
 
-        verify(telegramSender).sendMessage(10L, "Erreur lors de l'appel a Claude : timeout");
+        verify(telegramSender).editMessage(10L, 7, "Erreur lors de l'appel a Claude : timeout");
     }
 
     @Test
@@ -396,6 +426,48 @@ class AgentVpsTelegramControllerTest {
         verify(telegramSender).sendMessage(eq(10L), eq(
                 "Taches recurrentes :\n> healthcheck - dernier run : OK\n  vieille-tache (desactivee) - jamais execute"
         ));
+    }
+
+    @Test
+    void tacheListTagsOneTimeTasks() {
+        RecurringTask oneTime = recurringTask("rappel", RecurringTaskStatus.ACTIVE, null);
+        oneTime.setTriggerType(RecurringTaskTriggerType.ONE_TIME);
+        oneTime.setCronExpression(null);
+        oneTime.setScheduledAt(Instant.now().plusSeconds(3600));
+        when(recurringTaskService.listTasks()).thenReturn(List.of(oneTime));
+
+        controller.tache(context(10L, "/tache list", List.of("list")));
+
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("rappel [ponctuelle]"));
+    }
+
+    @Test
+    void tacheShowDisplaysScheduledDateForAOneTimeTask() {
+        Instant scheduledAt = Instant.now().plusSeconds(3600);
+        RecurringTask oneTime = recurringTask("rappel", RecurringTaskStatus.ACTIVE, null);
+        oneTime.setTriggerType(RecurringTaskTriggerType.ONE_TIME);
+        oneTime.setCronExpression(null);
+        oneTime.setScheduledAt(scheduledAt);
+        when(recurringTaskService.getTask("rappel")).thenReturn(oneTime);
+        String expectedDate = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")
+                .withZone(ZoneId.systemDefault())
+                .format(scheduledAt);
+
+        controller.tache(context(10L, "/tache show rappel", List.of("show", "rappel")));
+
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.argThat(msg ->
+                msg.contains("Type : ponctuelle") && msg.contains("Prevue le : " + expectedDate)
+        ));
+    }
+
+    @Test
+    void tacheShowDisplaysCronForARecurringTask() {
+        RecurringTask cronTask = recurringTask("healthcheck", RecurringTaskStatus.ACTIVE, null);
+        when(recurringTaskService.getTask("healthcheck")).thenReturn(cronTask);
+
+        controller.tache(context(10L, "/tache show healthcheck", List.of("show", "healthcheck")));
+
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("Cron : 0 0 6 * * *"));
     }
 
     @Test

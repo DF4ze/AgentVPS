@@ -8,6 +8,7 @@ import fr.ses10doigts.agentvps.model.ProjectStatus;
 import fr.ses10doigts.agentvps.model.RecurringTask;
 import fr.ses10doigts.agentvps.model.RecurringTaskRunOutcome;
 import fr.ses10doigts.agentvps.model.RecurringTaskStatus;
+import fr.ses10doigts.agentvps.model.RecurringTaskTriggerType;
 import fr.ses10doigts.agentvps.service.ChatService;
 import fr.ses10doigts.agentvps.service.ClaudeCliException;
 import fr.ses10doigts.agentvps.service.ProjectException;
@@ -17,6 +18,7 @@ import fr.ses10doigts.agentvps.service.RecurringTaskCreationWizard;
 import fr.ses10doigts.agentvps.service.RecurringTaskException;
 import fr.ses10doigts.agentvps.service.RecurringTaskManager;
 import fr.ses10doigts.agentvps.service.RecurringTaskService;
+import fr.ses10doigts.telegrambots.model.TelegramMessageReference;
 import fr.ses10doigts.telegrambots.model.TelegramUpdateContext;
 import fr.ses10doigts.telegrambots.service.poller.handler.annot.Chat;
 import fr.ses10doigts.telegrambots.service.poller.handler.annot.Command;
@@ -27,6 +29,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
 
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Locale;
@@ -38,7 +42,7 @@ import java.util.Optional;
  * actif) et @Chat (message libre transmis a "claude -p", avec ou sans --resume selon
  * la conversation courante du projet actif).
  *
- * Deux choix de conception a noter :
+ * Trois choix de conception a noter :
  *
  * 1. TelegramSender est injecte via ObjectProvider, pas directement. Le bean
  * TelegramSender (comme TelegramHandlerRegistry, voir TelegramBuiltinController dans
@@ -55,6 +59,12 @@ import java.util.Optional;
  * exception (juste un log cote serveur) : toute la logique metier (ProjectException,
  * ClaudeCliException) est donc capturee ici et transformee en message explicite, sinon
  * un appel claude en echec resterait silencieux cote Telegram.
+ *
+ * 3. Le handler @Chat envoie d'abord un message place-holder (CHAT_PROCESSING_PLACEHOLDER)
+ * avant l'appel a claude -p, puis l'ecrase (TelegramSender.editMessage) avec la vraie
+ * reponse (ou le message d'erreur) une fois l'appel termine - un appel peut prendre jusqu'a
+ * 120s et le seul autre signal cote Telegram est le "typing..." ephemere de sendTyping.
+ * Ca donne a Clem un ACK immediat que le bot a bien recu le message et est UP.
  */
 @TelegramController
 @RequiredArgsConstructor
@@ -63,6 +73,19 @@ public class AgentVpsTelegramController {
 
     /** Nom du projet cree automatiquement si un message libre arrive sans qu'aucun projet n'existe encore. */
     static final String DEFAULT_PROJECT_NAME = "default";
+
+    /**
+     * Place-holder envoye immediatement a la reception d'un message libre, avant l'appel a
+     * claude -p (potentiellement long, jusqu'a 120s) - permet a Clem de savoir que le bot est
+     * bien UP des la reception du message, sans attendre la vraie reponse. Une fois celle-ci
+     * disponible (ou en cas d'echec), ce message est ecrase via TelegramSender.editMessage
+     * (voir chat() ci-dessous), jamais renvoye comme un nouveau message.
+     */
+    static final String CHAT_PROCESSING_PLACEHOLDER = "Message recu, je m'en occupe...";
+
+    /** Format d'affichage d'une date/heure de tache ponctuelle (voir showTask/listTasks). */
+    private static final DateTimeFormatter SCHEDULED_AT_DISPLAY_FORMAT =
+            DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale.ROOT).withZone(ZoneId.systemDefault());
 
     private final ProjectService projectService;
     private final ProjectOnboardingService onboardingService;
@@ -324,6 +347,9 @@ public class AgentVpsTelegramController {
         for (RecurringTask task : tasks) {
             boolean disabled = task.getStatus() == RecurringTaskStatus.DISABLED;
             sb.append(disabled ? "  " : "> ").append(task.getName());
+            if (task.getTriggerType() == RecurringTaskTriggerType.ONE_TIME) {
+                sb.append(" [ponctuelle]");
+            }
             if (disabled) {
                 sb.append(" (desactivee)");
             }
@@ -346,7 +372,14 @@ public class AgentVpsTelegramController {
             sb.append("Tache '").append(task.getName()).append("'\n");
             sb.append("Projet : ").append(task.getProjectName()).append('\n');
             sb.append("Commande : ").append(task.getCommand()).append('\n');
-            sb.append("Cron : ").append(task.getCronExpression()).append('\n');
+            if (task.getTriggerType() == RecurringTaskTriggerType.ONE_TIME) {
+                sb.append("Type : ponctuelle (une seule fois)\n");
+                sb.append("Prevue le : ").append(task.getScheduledAt() != null
+                        ? SCHEDULED_AT_DISPLAY_FORMAT.format(task.getScheduledAt())
+                        : "?").append('\n');
+            } else {
+                sb.append("Cron : ").append(task.getCronExpression()).append('\n');
+            }
             sb.append("Statut : ").append(task.getStatus() == RecurringTaskStatus.ACTIVE ? "active" : "desactivee").append('\n');
             sb.append("Notification : ").append(describePolicy(task.getNotificationPolicy())).append('\n');
             if (task.getDescription() != null && !task.getDescription().isBlank()) {
@@ -484,12 +517,13 @@ public class AgentVpsTelegramController {
             MDC.put("project", active.getName());
 
             sender().sendTyping(chatId);
+            TelegramMessageReference placeholder = sender().sendMessageAndGetReference(chatId, CHAT_PROCESSING_PLACEHOLDER);
             try {
                 ClaudeCliResult result = chatService.sendMessage(active, text);
-                sender().sendMessage(chatId, result.getResult());
+                sender().editMessage(chatId, placeholder.getMessageId(), result.getResult());
             } catch (ClaudeCliException e) {
                 log.error("Echec de l'appel claude pour le projet '{}'", active.getName(), e);
-                sender().sendMessage(chatId, "Erreur lors de l'appel a Claude : " + e.getMessage());
+                sender().editMessage(chatId, placeholder.getMessageId(), "Erreur lors de l'appel a Claude : " + e.getMessage());
             }
         } finally {
             MDC.remove("project");

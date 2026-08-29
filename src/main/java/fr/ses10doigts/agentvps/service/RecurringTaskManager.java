@@ -6,6 +6,8 @@ import fr.ses10doigts.agentvps.model.RecurringTaskRunOutcome;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
+
 /**
  * Orchestration des taches recurrentes (roadmap Phase 7) : compose RecurringTaskService
  * (persistance pure) et RecurringTaskScheduler (planification live) pour que chaque
@@ -27,6 +29,15 @@ public class RecurringTaskManager {
                                      NotificationPolicy notificationPolicy, String description) {
         RecurringTask task = recurringTaskService.createTask(
                 name, projectName, command, cronExpression, notificationPolicy, description);
+        scheduler.schedule(task);
+        return task;
+    }
+
+    /** Cree une tache ponctuelle (voir RecurringTaskService.createOneTimeTask) et la planifie live. */
+    public RecurringTask createOneTimeTask(String name, String projectName, String command, Instant scheduledAt,
+                                            NotificationPolicy notificationPolicy, String description) {
+        RecurringTask task = recurringTaskService.createOneTimeTask(
+                name, projectName, command, scheduledAt, notificationPolicy, description);
         scheduler.schedule(task);
         return task;
     }

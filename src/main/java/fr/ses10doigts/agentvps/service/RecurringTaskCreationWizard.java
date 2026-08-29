@@ -7,7 +7,11 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.List;
@@ -23,8 +27,16 @@ import java.util.stream.Collectors;
  * etait trop rebutant, en particulier taper une expression cron a la main). Remplace
  * entierement l'ancienne syntaxe positionnelle : /tache new pose desormais une question
  * a la fois (nom, projet, commande, notification, frequence), avec des menus numerotes
- * pour la frequence (quotidien/horaire/toutes les N minutes/cron avance) plutot que
- * d'exiger un format Spring a 6 champs des le depart.
+ * pour la frequence (quotidien/horaire/toutes les N minutes/cron avance/ponctuel) plutot
+ * que d'exiger un format Spring a 6 champs des le depart.
+ *
+ * Mode "ponctuel" (ajoute le 29/08/2026, demande Clem) : une tache qui ne s'execute
+ * qu'une seule fois, a un instant precis - RecurringTaskManager.createOneTimeTask, pas
+ * createTask (voir RecurringTaskTriggerType). Menu intermediaire propose
+ * aujourd'hui/demain/meme jour la semaine prochaine (puis une heure HH:mm) ou une date
+ * complete jj/mm/aaaa hh:mm. Toutes les heures saisies sont interpretees dans le fuseau
+ * horaire par defaut de la JVM (ZoneId.systemDefault(), le meme que celui utilise
+ * implicitement par CronTrigger pour les autres modes - coherence des heures affichees).
  *
  * Etat de conversation garde EN MEMOIRE (pas persiste) par chatId : un redemarrage du
  * service en plein assistant force l'utilisateur a refaire /tache new - compromis
@@ -41,6 +53,9 @@ import java.util.stream.Collectors;
 public class RecurringTaskCreationWizard {
 
     private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("H:mm", Locale.ROOT);
+    private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("dd/MM/yyyy", Locale.ROOT);
+    private static final DateTimeFormatter DATE_TIME_INPUT_FORMAT = DateTimeFormatter.ofPattern("dd/MM/yyyy H:mm", Locale.ROOT);
+    private static final DateTimeFormatter DATE_TIME_DISPLAY_FORMAT = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale.ROOT);
 
     private final RecurringTaskManager recurringTaskManager;
     private final RecurringTaskService recurringTaskService;
@@ -93,6 +108,9 @@ public class RecurringTaskCreationWizard {
             case FREQUENCY_DAILY_TIME -> handleDailyTime(state, trimmed);
             case FREQUENCY_MINUTES -> handleMinutes(state, trimmed);
             case FREQUENCY_CUSTOM_CRON -> handleCustomCron(state, trimmed);
+            case FREQUENCY_ONE_TIME_CHOICE -> handleOneTimeChoice(state, trimmed);
+            case FREQUENCY_ONE_TIME_TIME -> handleOneTimeTime(state, trimmed);
+            case FREQUENCY_ONE_TIME_DATETIME -> handleOneTimeDateTime(state, trimmed);
             case CONFIRM -> handleConfirm(chatId, state, normalized);
         };
     }
@@ -160,7 +178,8 @@ public class RecurringTaskCreationWizard {
                 + "2. Toutes les heures\n"
                 + "3. Toutes les N minutes\n"
                 + "4. Expression cron personnalisee (avance)\n"
-                + "Reponds avec 1, 2, 3 ou 4.";
+                + "5. Une seule fois, a un moment precis (tache ponctuelle)\n"
+                + "Reponds avec 1, 2, 3, 4 ou 5.";
     }
 
     private String handleFrequencyMode(WizardState state, String choice) {
@@ -184,7 +203,16 @@ public class RecurringTaskCreationWizard {
                 yield "Entre ton expression cron (format Spring, 6 champs : secondes minutes heures "
                         + "jour-du-mois mois jour-de-semaine, ex. 0 0 6 * * * pour tous les jours a 6h) :";
             }
-            default -> "Reponds avec 1, 2, 3 ou 4 : a quelle frequence doit-elle tourner ?";
+            case "5" -> {
+                state.step = Step.FREQUENCY_ONE_TIME_CHOICE;
+                yield "Quand doit-elle s'executer (une seule fois) ?\n"
+                        + "1. Aujourd'hui\n"
+                        + "2. Demain\n"
+                        + "3. Le meme jour, la semaine prochaine\n"
+                        + "4. Une date precise (jj/mm/aaaa hh:mm)\n"
+                        + "Reponds avec 1, 2, 3 ou 4.";
+            }
+            default -> "Reponds avec 1, 2, 3, 4 ou 5 : a quelle frequence doit-elle tourner ?";
         };
     }
 
@@ -230,12 +258,77 @@ public class RecurringTaskCreationWizard {
         return recap(state);
     }
 
+    private String handleOneTimeChoice(WizardState state, String choice) {
+        ZoneId zone = ZoneId.systemDefault();
+        return switch (choice) {
+            case "1" -> {
+                state.oneTimeBaseDate = LocalDate.now(zone);
+                state.step = Step.FREQUENCY_ONE_TIME_TIME;
+                yield "A quelle heure aujourd'hui ? (format HH:mm, ex. 18:30)";
+            }
+            case "2" -> {
+                state.oneTimeBaseDate = LocalDate.now(zone).plusDays(1);
+                state.step = Step.FREQUENCY_ONE_TIME_TIME;
+                yield "A quelle heure demain ? (format HH:mm, ex. 09:00)";
+            }
+            case "3" -> {
+                state.oneTimeBaseDate = LocalDate.now(zone).plusWeeks(1);
+                state.step = Step.FREQUENCY_ONE_TIME_TIME;
+                yield "A quelle heure le " + state.oneTimeBaseDate.format(DATE_FORMAT) + " ? (format HH:mm)";
+            }
+            case "4" -> {
+                state.step = Step.FREQUENCY_ONE_TIME_DATETIME;
+                yield "Quelle date et heure ? (format jj/mm/aaaa hh:mm, ex. 05/09/2026 14:30)";
+            }
+            default -> "Reponds avec 1, 2, 3 ou 4 : quand doit-elle s'executer ?";
+        };
+    }
+
+    /** Suite de "aujourd'hui"/"demain"/"meme jour semaine prochaine" (state.oneTimeBaseDate deja fixe) : ne reste plus qu'a lire l'heure. */
+    private String handleOneTimeTime(WizardState state, String rawTime) {
+        LocalTime time;
+        try {
+            time = LocalTime.parse(rawTime, TIME_FORMAT);
+        } catch (DateTimeParseException e) {
+            return "Format invalide, attendu HH:mm (ex. 18:30). A quelle heure ?";
+        }
+        return finalizeOneTime(state, LocalDateTime.of(state.oneTimeBaseDate, time));
+    }
+
+    private String handleOneTimeDateTime(WizardState state, String rawDateTime) {
+        LocalDateTime dateTime;
+        try {
+            dateTime = LocalDateTime.parse(rawDateTime, DATE_TIME_INPUT_FORMAT);
+        } catch (DateTimeParseException e) {
+            return "Format invalide, attendu jj/mm/aaaa hh:mm (ex. 05/09/2026 14:30). Quelle date et heure ?";
+        }
+        return finalizeOneTime(state, dateTime);
+    }
+
+    /** Commun aux deux chemins ci-dessus : convertit en Instant (fuseau JVM) et rejette une date deja passee. */
+    private String finalizeOneTime(WizardState state, LocalDateTime dateTime) {
+        Instant instant = dateTime.atZone(ZoneId.systemDefault()).toInstant();
+        if (!instant.isAfter(Instant.now())) {
+            return "Cette date et heure sont deja passees. Choisis un moment dans le futur.";
+        }
+        state.oneTime = true;
+        state.scheduledAt = instant;
+        state.frequencyDescription = "une seule fois, le " + dateTime.format(DATE_TIME_DISPLAY_FORMAT);
+        state.step = Step.CONFIRM;
+        return recap(state);
+    }
+
     private String handleConfirm(Long chatId, WizardState state, String normalized) {
         if (normalized.equals("oui") || normalized.equals("o") || normalized.equals("yes") || normalized.equals("y")) {
             sessions.remove(chatId);
             try {
-                RecurringTask task = recurringTaskManager.createTask(
-                        state.name, state.projectName, state.command, state.cronExpression, state.notificationPolicy, null);
+                RecurringTask task = state.oneTime
+                        ? recurringTaskManager.createOneTimeTask(
+                                state.name, state.projectName, state.command, state.scheduledAt,
+                                state.notificationPolicy, null)
+                        : recurringTaskManager.createTask(
+                                state.name, state.projectName, state.command, state.cronExpression,
+                                state.notificationPolicy, null);
                 return "Tache '" + task.getName() + "' creee et active ! (" + state.frequencyDescription + ")";
             } catch (RecurringTaskException e) {
                 log.error("Echec de la creation de la tache '{}' via l'assistant", state.name, e);
@@ -272,7 +365,8 @@ public class RecurringTaskCreationWizard {
     }
 
     private enum Step {
-        NAME, PROJECT, SCRIPT, NOTIFICATION, FREQUENCY_MODE, FREQUENCY_DAILY_TIME, FREQUENCY_MINUTES, FREQUENCY_CUSTOM_CRON, CONFIRM
+        NAME, PROJECT, SCRIPT, NOTIFICATION, FREQUENCY_MODE, FREQUENCY_DAILY_TIME, FREQUENCY_MINUTES,
+        FREQUENCY_CUSTOM_CRON, FREQUENCY_ONE_TIME_CHOICE, FREQUENCY_ONE_TIME_TIME, FREQUENCY_ONE_TIME_DATETIME, CONFIRM
     }
 
     private static final class WizardState {
@@ -283,5 +377,13 @@ public class RecurringTaskCreationWizard {
         private NotificationPolicy notificationPolicy;
         private String cronExpression;
         private String frequencyDescription;
+
+        // --- Mode ponctuel uniquement (ajoute le 29/08/2026, voir RecurringTaskTriggerType) ---
+        /** true si le mode "5. Une seule fois" a ete choisi - decide quel createXxxTask appeler dans handleConfirm. */
+        private boolean oneTime;
+        /** Date de base fixee par le choix 1/2/3 (aujourd'hui/demain/semaine prochaine), en attendant l'heure. */
+        private LocalDate oneTimeBaseDate;
+        /** Instant final calcule (fuseau JVM), pret pour RecurringTaskManager.createOneTimeTask. */
+        private Instant scheduledAt;
     }
 }

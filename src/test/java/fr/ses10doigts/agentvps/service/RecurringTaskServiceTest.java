@@ -6,6 +6,7 @@ import fr.ses10doigts.agentvps.config.WorkspaceProperties;
 import fr.ses10doigts.agentvps.model.NotificationPolicy;
 import fr.ses10doigts.agentvps.model.RecurringTask;
 import fr.ses10doigts.agentvps.model.RecurringTaskStatus;
+import fr.ses10doigts.agentvps.model.RecurringTaskTriggerType;
 import fr.ses10doigts.agentvps.model.RunStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -93,6 +94,69 @@ class RecurringTaskServiceTest {
         assertThatThrownBy(() -> service.createTask(
                 "HealthCheck", "maintenance", "./health_check.sh", "@daily", null, null))
                 .isInstanceOf(RecurringTaskException.class);
+    }
+
+    // -------------------------------------------------------- createOneTimeTask (mode ponctuel)
+
+    @Test
+    void createOneTimeTaskSucceedsForAFutureInstant() {
+        Instant scheduledAt = Instant.now().plusSeconds(3600);
+
+        RecurringTask task = service.createOneTimeTask(
+                "rappel", "maintenance", "./notify.sh", scheduledAt, NotificationPolicy.ON_ISSUE, "Rappel ponctuel");
+
+        assertThat(task.getName()).isEqualTo("rappel");
+        assertThat(task.getTriggerType()).isEqualTo(RecurringTaskTriggerType.ONE_TIME);
+        assertThat(task.getScheduledAt()).isEqualTo(scheduledAt);
+        assertThat(task.getCronExpression()).isNull();
+        assertThat(task.getStatus()).isEqualTo(RecurringTaskStatus.ACTIVE);
+    }
+
+    @Test
+    void createOneTimeTaskRejectsANullScheduledAt() {
+        assertThatThrownBy(() -> service.createOneTimeTask(
+                "rappel", "maintenance", "./notify.sh", null, null, null))
+                .isInstanceOf(RecurringTaskException.class);
+    }
+
+    @Test
+    void createOneTimeTaskRejectsAPastScheduledAt() {
+        assertThatThrownBy(() -> service.createOneTimeTask(
+                "rappel", "maintenance", "./notify.sh", Instant.now().minusSeconds(60), null, null))
+                .isInstanceOf(RecurringTaskException.class);
+    }
+
+    @Test
+    void createOneTimeTaskRejectsUnknownProject() {
+        assertThatThrownBy(() -> service.createOneTimeTask(
+                "rappel", "inconnu", "./notify.sh", Instant.now().plusSeconds(60), null, null))
+                .isInstanceOf(RecurringTaskException.class)
+                .hasMessageContaining("inconnu");
+    }
+
+    @Test
+    void createOneTimeTaskRejectsBlankCommand() {
+        assertThatThrownBy(() -> service.createOneTimeTask(
+                "rappel", "maintenance", "   ", Instant.now().plusSeconds(60), null, null))
+                .isInstanceOf(RecurringTaskException.class);
+    }
+
+    @Test
+    void createOneTimeTaskRejectsDuplicateName() {
+        service.createOneTimeTask("rappel", "maintenance", "./notify.sh", Instant.now().plusSeconds(60), null, null);
+
+        assertThatThrownBy(() -> service.createOneTimeTask(
+                "Rappel", "maintenance", "./notify.sh", Instant.now().plusSeconds(120), null, null))
+                .isInstanceOf(RecurringTaskException.class);
+    }
+
+    @Test
+    void createTaskStillDefaultsToCronTriggerType() {
+        RecurringTask task = service.createTask(
+                "healthcheck", "maintenance", "./health_check.sh", "0 0 6 * * *", NotificationPolicy.ON_ISSUE, null);
+
+        assertThat(task.getTriggerType()).isEqualTo(RecurringTaskTriggerType.CRON);
+        assertThat(task.getScheduledAt()).isNull();
     }
 
     @Test

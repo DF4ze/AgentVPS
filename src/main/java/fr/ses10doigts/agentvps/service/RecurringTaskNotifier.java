@@ -5,6 +5,7 @@ import fr.ses10doigts.agentvps.model.NotificationPolicy;
 import fr.ses10doigts.agentvps.model.RecurringTask;
 import fr.ses10doigts.agentvps.model.RecurringTaskRunOutcome;
 import fr.ses10doigts.telegrambots.service.sender.TelegramSender;
+import fr.ses10doigts.telegrambots.service.sender.TelegramSenderRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
@@ -15,8 +16,22 @@ import org.springframework.stereotype.Component;
  * tache recurrente (RecurringTask.notificationPolicy, decision Clem du 29/08/2026 :
  * configurable par tache) et l'envoie a agentvps.recurring-tasks.notification-chat-id.
  *
- * TelegramSender resolu via ObjectProvider.getIfAvailable() (pas getObject()) : a la
- * difference d'AgentVpsTelegramController (dont les handlers ne s'executent que si
+ * Depend de TelegramSenderRegistry (pas du bean TelegramSender injecte partout ailleurs
+ * dans le code - voir AgentVpsTelegramController) et appelle explicitement
+ * getDefaultBotSender() - bug trouve en prod le 29/08/2026 : le bean TelegramSender par
+ * defaut est un ContextAwareTelegramSender, qui a besoin qu'un "bot courant" soit lie au
+ * thread en cours via CurrentTelegramBotContext (ThreadLocal, normalement bind/clear par
+ * TelegramPollingBotAdapter autour du traitement d'un update entrant). Ce composant est
+ * invoque depuis le thread pool du scheduler (RecurringTaskScheduler, TaskScheduler
+ * dedie dans SchedulingConfig), qui ne traite jamais d'update Telegram entrant : rien n'y
+ * lie jamais de bot courant, d'ou un IllegalStateException("No current Telegram bot is
+ * bound to the current thread") au premier declenchement cron reel. TelegramSenderRegistry
+ * .getDefaultBotSender() renvoie directement un DefaultTelegramSender (client HTTP lie a
+ * un token de bot, sans aucune dependance a un ThreadLocal) - la bonne brique pour un
+ * envoi depuis un contexte hors requete Telegram.
+ *
+ * TelegramSenderRegistry resolu via ObjectProvider.getIfAvailable() (pas getObject()) :
+ * a la difference d'AgentVpsTelegramController (dont les handlers ne s'executent que si
  * Telegram est actif, puisque c'est lui qui les declenche), ce composant est appele
  * depuis un declenchement cron - telegram.enabled peut tres bien etre false (ex. tests,
  * environnement de dev) sans que ca doive faire echouer l'execution de la tache
@@ -27,7 +42,7 @@ import org.springframework.stereotype.Component;
 @Slf4j
 public class RecurringTaskNotifier {
 
-    private final ObjectProvider<TelegramSender> telegramSenderProvider;
+    private final ObjectProvider<TelegramSenderRegistry> telegramSenderRegistryProvider;
     private final RecurringTaskProperties properties;
 
     public void notify(RecurringTask task, RecurringTaskRunOutcome outcome) {
@@ -51,13 +66,14 @@ public class RecurringTaskNotifier {
             return;
         }
 
-        TelegramSender sender = telegramSenderProvider.getIfAvailable();
-        if (sender == null) {
-            log.warn("TelegramSender indisponible (telegram.enabled=false ?) : notification de la "
+        TelegramSenderRegistry senderRegistry = telegramSenderRegistryProvider.getIfAvailable();
+        if (senderRegistry == null) {
+            log.warn("TelegramSenderRegistry indisponible (telegram.enabled=false ?) : notification de la "
                     + "tache '{}' non envoyee", task.getName());
             return;
         }
 
+        TelegramSender sender = senderRegistry.getDefaultBotSender();
         sender.sendMessage(chatId, formatMessage(task, outcome));
     }
 

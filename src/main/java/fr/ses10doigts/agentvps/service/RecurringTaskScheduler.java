@@ -4,6 +4,7 @@ import fr.ses10doigts.agentvps.model.Project;
 import fr.ses10doigts.agentvps.model.RecurringTask;
 import fr.ses10doigts.agentvps.model.RecurringTaskRunOutcome;
 import fr.ses10doigts.agentvps.model.RecurringTaskStatus;
+import fr.ses10doigts.agentvps.model.RecurringTaskTriggerType;
 import fr.ses10doigts.agentvps.model.RunStatus;
 import fr.ses10doigts.agentvps.model.ScriptExecutionResult;
 import lombok.RequiredArgsConstructor;
@@ -66,19 +67,39 @@ public class RecurringTaskScheduler implements ApplicationListener<ApplicationRe
         log.info("Taches recurrentes planifiees au demarrage : {}", scheduledFutures.keySet());
     }
 
-    /** (Re)planifie une tache : annule d'abord toute planification existante du meme nom (voir unschedule). */
+    /**
+     * (Re)planifie une tache : annule d'abord toute planification existante du meme nom
+     * (voir unschedule). Branche selon RecurringTaskTriggerType (ajoute le 29/08/2026) :
+     * une tache ONE_TIME est planifiee pour un instant unique (TaskScheduler.schedule avec
+     * un Instant, pas de CronTrigger) - elle ne se replanifie jamais d'elle-meme, voir
+     * executeTask qui la desactive automatiquement une fois executee.
+     */
     public void schedule(RecurringTask task) {
         unschedule(task.getName());
+        String name = task.getName();
+
+        if (task.getTriggerType() == RecurringTaskTriggerType.ONE_TIME) {
+            Instant runAt = task.getScheduledAt();
+            if (runAt == null || !runAt.isAfter(Instant.now())) {
+                log.warn("Tache ponctuelle '{}' non planifiee (date d'execution manquante ou deja passee : {})",
+                        name, runAt);
+                return;
+            }
+            ScheduledFuture<?> future = taskScheduler.schedule(() -> executeTask(name, true), runAt);
+            scheduledFutures.put(name, future);
+            log.info("Tache ponctuelle '{}' planifiee pour {}", name, runAt);
+            return;
+        }
+
         CronTrigger trigger;
         try {
             trigger = new CronTrigger(task.getCronExpression());
         } catch (IllegalArgumentException e) {
             // Ne devrait pas arriver (cron deja valide a la creation, voir RecurringTaskService.validateCron)
             // mais on ne veut pas faire echouer tout le demarrage de l'application pour une tache.
-            log.error("Expression cron invalide pour la tache '{}', non planifiee : {}", task.getName(), e.getMessage());
+            log.error("Expression cron invalide pour la tache '{}', non planifiee : {}", name, e.getMessage());
             return;
         }
-        String name = task.getName();
         ScheduledFuture<?> future = taskScheduler.schedule(() -> executeTask(name, true), trigger);
         scheduledFutures.put(name, future);
         log.info("Tache recurrente '{}' planifiee (cron={})", name, task.getCronExpression());
@@ -143,7 +164,35 @@ public class RecurringTaskScheduler implements ApplicationListener<ApplicationRe
             }
 
             if (triggeredBySchedule) {
-                notifier.notify(task, outcome);
+                // Garde-fou (bug trouve en prod le 29/08/2026, voir RecurringTaskNotifier) :
+                // un echec d'envoi de la notification (Telegram down, config manquante,
+                // etc.) ne doit jamais faire perdre le resultat reel de l'execution du
+                // script ni remonter comme une erreur "du scheduler" dans les logs
+                // (TaskUtils$LoggingErrorHandler) - le run lui-meme a deja reussi/echoue
+                // et a deja ete persiste par recordRunResult/recordRunError ci-dessus.
+                try {
+                    notifier.notify(task, outcome);
+                } catch (Exception e) {
+                    log.error("Echec d'envoi de la notification Telegram pour la tache recurrente '{}' "
+                            + "(execution du script non affectee, statut={})", name, outcome.status(), e);
+                }
+
+                // Une tache ponctuelle (ajoute le 29/08/2026) ne se redeclenche jamais toute
+                // seule (planifiee via un Instant unique, pas un CronTrigger) - on la repasse
+                // a DISABLED pour que /tache list/show reflete clairement qu'elle est
+                // terminee, plutot que de la laisser ACTIVE indefiniment alors qu'elle
+                // n'attend plus rien.
+                if (task.getTriggerType() == RecurringTaskTriggerType.ONE_TIME) {
+                    try {
+                        unschedule(name);
+                        recurringTaskService.setEnabled(name, false);
+                        log.info("Tache ponctuelle '{}' executee (statut={}) : desactivee automatiquement",
+                                name, outcome.status());
+                    } catch (Exception e) {
+                        log.error("Echec de la desactivation automatique de la tache ponctuelle '{}' apres execution",
+                                name, e);
+                    }
+                }
             }
             return outcome;
         } finally {
