@@ -20,6 +20,12 @@ import java.time.Instant;
  * pour le premier cas d'usage, health_check.sh) : nom, cron, projet associe et commande
  * sont des champs de donnees, pas du code - un nouveau script de la Phase 7 se declare
  * via /tache new, sans modification du code Java.
+ *
+ * Extension du 29/08/2026 (demande Clem) : au-dela d'un simple script, une tache peut
+ * aussi confier une "mission" en texte libre a l'agent (RecurringTaskExecutionMode.AGENT_MISSION,
+ * voir missionPrompt/AgentMissionExecutionService) - recherches reseau, appels MCP, lecture
+ * de fichiers locaux, etc., avec les privileges normaux de claude -p (pas ceux, plus larges,
+ * du process AgentVPS lui-meme comme pour le mode SCRIPT).
  */
 @Data
 @NoArgsConstructor
@@ -42,6 +48,20 @@ public class RecurringTask {
      * et ses limites, ex. pas de pipes/redirections).
      */
     private String command;
+
+    /**
+     * Mecanisme d'execution (ajoute le 29/08/2026 - voir RecurringTaskExecutionMode) :
+     * determine lequel de command / missionPrompt est effectivement utilise.
+     */
+    private RecurringTaskExecutionMode executionMode = RecurringTaskExecutionMode.SCRIPT;
+
+    /**
+     * Mission en texte libre confiee a l'agent (executionMode == AGENT_MISSION uniquement,
+     * voir RecurringTaskExecutionMode) : envoyee telle quelle a "claude -p" par
+     * AgentMissionExecutionService, dans le repertoire de travail du projet associe. Null
+     * si executionMode == SCRIPT.
+     */
+    private String missionPrompt;
 
     /**
      * Mecanisme de declenchement (ajoute le 29/08/2026 - voir RecurringTaskTriggerType).

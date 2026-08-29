@@ -6,6 +6,7 @@ import fr.ses10doigts.agentvps.model.NotificationPolicy;
 import fr.ses10doigts.agentvps.model.Project;
 import fr.ses10doigts.agentvps.model.ProjectStatus;
 import fr.ses10doigts.agentvps.model.RecurringTask;
+import fr.ses10doigts.agentvps.model.RecurringTaskExecutionMode;
 import fr.ses10doigts.agentvps.model.RecurringTaskRunOutcome;
 import fr.ses10doigts.agentvps.model.RecurringTaskStatus;
 import fr.ses10doigts.agentvps.model.RecurringTaskTriggerType;
@@ -387,6 +388,9 @@ public class AgentVpsTelegramController {
             if (task.getTriggerType() == RecurringTaskTriggerType.ONE_TIME) {
                 sb.append(" [ponctuelle]");
             }
+            if (task.getExecutionMode() == RecurringTaskExecutionMode.AGENT_MISSION) {
+                sb.append(" [mission]");
+            }
             if (disabled) {
                 sb.append(" (desactivee)");
             }
@@ -408,7 +412,12 @@ public class AgentVpsTelegramController {
             StringBuilder sb = new StringBuilder();
             sb.append("Tache '").append(task.getName()).append("'\n");
             sb.append("Projet : ").append(task.getProjectName()).append('\n');
-            sb.append("Commande : ").append(task.getCommand()).append('\n');
+            if (task.getExecutionMode() == RecurringTaskExecutionMode.AGENT_MISSION) {
+                sb.append("Mode : mission agent\n");
+                sb.append("Mission : ").append(task.getMissionPrompt()).append('\n');
+            } else {
+                sb.append("Commande : ").append(task.getCommand()).append('\n');
+            }
             if (task.getTriggerType() == RecurringTaskTriggerType.ONE_TIME) {
                 sb.append("Type : ponctuelle (une seule fois)\n");
                 sb.append("Prevue le : ").append(task.getScheduledAt() != null

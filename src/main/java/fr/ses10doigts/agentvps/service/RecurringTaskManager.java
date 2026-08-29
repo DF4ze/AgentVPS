@@ -42,6 +42,25 @@ public class RecurringTaskManager {
         return task;
     }
 
+    /** Cree une tache "mission agent" (voir RecurringTaskService.createAgentMissionTask) et la planifie live. */
+    public RecurringTask createAgentMissionTask(String name, String projectName, String missionPrompt, String cronExpression,
+                                                 NotificationPolicy notificationPolicy, String description) {
+        RecurringTask task = recurringTaskService.createAgentMissionTask(
+                name, projectName, missionPrompt, cronExpression, notificationPolicy, description);
+        scheduler.schedule(task);
+        return task;
+    }
+
+    /** Variante ponctuelle de createAgentMissionTask (voir RecurringTaskService.createOneTimeAgentMissionTask). */
+    public RecurringTask createOneTimeAgentMissionTask(String name, String projectName, String missionPrompt,
+                                                         Instant scheduledAt, NotificationPolicy notificationPolicy,
+                                                         String description) {
+        RecurringTask task = recurringTaskService.createOneTimeAgentMissionTask(
+                name, projectName, missionPrompt, scheduledAt, notificationPolicy, description);
+        scheduler.schedule(task);
+        return task;
+    }
+
     public RecurringTask enable(String name) {
         RecurringTask task = recurringTaskService.setEnabled(name, true);
         scheduler.schedule(task);

@@ -14,6 +14,15 @@ public class RecurringTaskProperties {
     /** Delai maximum (secondes) avant destruction forcee du process d'un script en cours. */
     private int timeoutSeconds = 120;
 
+    /**
+     * Delai maximum (secondes) pour une mission agent (RecurringTaskExecutionMode.AGENT_MISSION,
+     * ajoute le 29/08/2026), distinct de timeoutSeconds ci-dessus (mode SCRIPT) et de
+     * agentvps.claude.timeout-seconds (chat interactif) : une mission peut enchainer plusieurs
+     * appels reseau/MCP, largement au-dela d'un delai de reponse de chat raisonnable. Voir
+     * AgentMissionExecutionService.
+     */
+    private int agentMissionTimeoutSeconds = 600;
+
     /** Taille du pool de threads dedie a la planification/execution des taches recurrentes. */
     private int schedulerPoolSize = 4;
 

@@ -2,6 +2,7 @@ package fr.ses10doigts.agentvps.service;
 
 import fr.ses10doigts.agentvps.model.NotificationPolicy;
 import fr.ses10doigts.agentvps.model.RecurringTask;
+import fr.ses10doigts.agentvps.model.RecurringTaskExecutionMode;
 import fr.ses10doigts.agentvps.model.RecurringTaskStatus;
 import fr.ses10doigts.agentvps.model.RecurringTaskStore;
 import fr.ses10doigts.agentvps.model.RecurringTaskTriggerType;
@@ -69,8 +70,8 @@ public class RecurringTaskService {
                                      String cronExpression, NotificationPolicy notificationPolicy,
                                      String description) {
         String validatedCron = validateCron(cronExpression);
-        return createTaskInternal(rawName, projectName, command, RecurringTaskTriggerType.CRON,
-                validatedCron, null, notificationPolicy, description);
+        return createTaskInternal(rawName, projectName, RecurringTaskExecutionMode.SCRIPT, command, null,
+                RecurringTaskTriggerType.CRON, validatedCron, null, notificationPolicy, description);
     }
 
     /**
@@ -84,26 +85,60 @@ public class RecurringTaskService {
     public RecurringTask createOneTimeTask(String rawName, String projectName, String command,
                                             Instant scheduledAt, NotificationPolicy notificationPolicy,
                                             String description) {
+        validateScheduledAt(scheduledAt);
+        return createTaskInternal(rawName, projectName, RecurringTaskExecutionMode.SCRIPT, command, null,
+                RecurringTaskTriggerType.ONE_TIME, null, scheduledAt, notificationPolicy, description);
+    }
+
+    /**
+     * Cree une nouvelle tache recurrente en mode "mission agent" (ajoute le 29/08/2026,
+     * demande Clem - roadmap Phase 7, "au-dela d'un simple script") : missionPrompt est
+     * un texte libre decrivant l'objectif a atteindre, envoye tel quel a "claude -p" a
+     * chaque declenchement (voir AgentMissionExecutionService) plutot qu'une commande
+     * shell fixe. Memes validations que createTask (nom unique, projet existant, cron
+     * valide), sauf que c'est missionPrompt qui ne doit pas etre vide, pas command.
+     */
+    public RecurringTask createAgentMissionTask(String rawName, String projectName, String missionPrompt,
+                                                 String cronExpression, NotificationPolicy notificationPolicy,
+                                                 String description) {
+        String validatedCron = validateCron(cronExpression);
+        return createTaskInternal(rawName, projectName, RecurringTaskExecutionMode.AGENT_MISSION, null, missionPrompt,
+                RecurringTaskTriggerType.CRON, validatedCron, null, notificationPolicy, description);
+    }
+
+    /** Variante ponctuelle de createAgentMissionTask (meme relation que createOneTimeTask vis-a-vis de createTask). */
+    public RecurringTask createOneTimeAgentMissionTask(String rawName, String projectName, String missionPrompt,
+                                                         Instant scheduledAt, NotificationPolicy notificationPolicy,
+                                                         String description) {
+        validateScheduledAt(scheduledAt);
+        return createTaskInternal(rawName, projectName, RecurringTaskExecutionMode.AGENT_MISSION, null, missionPrompt,
+                RecurringTaskTriggerType.ONE_TIME, null, scheduledAt, notificationPolicy, description);
+    }
+
+    /** Commun a createOneTimeTask/createOneTimeAgentMissionTask : une tache ponctuelle deja passee n'aurait aucun sens. */
+    private static void validateScheduledAt(Instant scheduledAt) {
         if (scheduledAt == null) {
             throw new RecurringTaskException("La date d'execution ne peut pas etre vide");
         }
         if (!scheduledAt.isAfter(Instant.now())) {
             throw new RecurringTaskException("La date d'execution doit etre dans le futur");
         }
-        return createTaskInternal(rawName, projectName, command, RecurringTaskTriggerType.ONE_TIME,
-                null, scheduledAt, notificationPolicy, description);
     }
 
-    private RecurringTask createTaskInternal(String rawName, String projectName, String command,
-                                              RecurringTaskTriggerType triggerType, String cronExpression,
-                                              Instant scheduledAt, NotificationPolicy notificationPolicy,
-                                              String description) {
+    private RecurringTask createTaskInternal(String rawName, String projectName, RecurringTaskExecutionMode executionMode,
+                                              String command, String missionPrompt, RecurringTaskTriggerType triggerType,
+                                              String cronExpression, Instant scheduledAt,
+                                              NotificationPolicy notificationPolicy, String description) {
         synchronized (lock) {
             String slug = slugify(rawName);
             if (store().getTasks().containsKey(slug)) {
                 throw new RecurringTaskException("Une tache recurrente nommee '" + slug + "' existe deja");
             }
-            if (command == null || command.isBlank()) {
+            if (executionMode == RecurringTaskExecutionMode.AGENT_MISSION) {
+                if (missionPrompt == null || missionPrompt.isBlank()) {
+                    throw new RecurringTaskException("La mission a confier a l'agent ne peut pas etre vide");
+                }
+            } else if (command == null || command.isBlank()) {
                 throw new RecurringTaskException("La commande a executer ne peut pas etre vide");
             }
 
@@ -118,7 +153,9 @@ public class RecurringTaskService {
             task.setName(slug);
             task.setDescription(description);
             task.setProjectName(projectName);
-            task.setCommand(command.trim());
+            task.setExecutionMode(executionMode);
+            task.setCommand(executionMode == RecurringTaskExecutionMode.SCRIPT ? command.trim() : null);
+            task.setMissionPrompt(executionMode == RecurringTaskExecutionMode.AGENT_MISSION ? missionPrompt.trim() : null);
             task.setTriggerType(triggerType);
             task.setCronExpression(cronExpression);
             task.setScheduledAt(scheduledAt);
@@ -128,7 +165,7 @@ public class RecurringTaskService {
 
             store().getTasks().put(slug, task);
             persist();
-            log.info("Tache recurrente '{}' creee (projet={}, {})", slug, projectName,
+            log.info("Tache recurrente '{}' creee (projet={}, mode={}, {})", slug, projectName, executionMode,
                     triggerType == RecurringTaskTriggerType.ONE_TIME
                             ? "une fois le " + scheduledAt
                             : "cron=" + cronExpression);
@@ -162,6 +199,24 @@ public class RecurringTaskService {
                 task.setLastRunAt(runAt);
                 task.setLastExitCode(exitCode);
                 task.setLastRunStatus(status);
+                task.setLastOutputSummary(outputSummary);
+                task.setLastErrorMessage(null);
+                persist();
+            });
+        }
+    }
+
+    /**
+     * Enregistre le resultat d'une mission agent reussie (RecurringTaskExecutionMode.AGENT_MISSION) :
+     * pas de code de sortie (lastExitCode reste null) - un appel qui revient normalement est
+     * toujours un succes (RunStatus.OK), voir AgentMissionExecutionService/RecurringTaskScheduler.
+     */
+    public void recordAgentRunResult(String name, Instant runAt, String outputSummary) {
+        synchronized (lock) {
+            findTask(name).ifPresent(task -> {
+                task.setLastRunAt(runAt);
+                task.setLastExitCode(null);
+                task.setLastRunStatus(RunStatus.OK);
                 task.setLastOutputSummary(outputSummary);
                 task.setLastErrorMessage(null);
                 persist();

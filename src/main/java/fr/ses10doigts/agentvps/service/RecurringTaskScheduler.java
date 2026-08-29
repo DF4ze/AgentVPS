@@ -1,7 +1,9 @@
 package fr.ses10doigts.agentvps.service;
 
+import fr.ses10doigts.agentvps.model.ClaudeCliResult;
 import fr.ses10doigts.agentvps.model.Project;
 import fr.ses10doigts.agentvps.model.RecurringTask;
+import fr.ses10doigts.agentvps.model.RecurringTaskExecutionMode;
 import fr.ses10doigts.agentvps.model.RecurringTaskRunOutcome;
 import fr.ses10doigts.agentvps.model.RecurringTaskStatus;
 import fr.ses10doigts.agentvps.model.RecurringTaskTriggerType;
@@ -55,6 +57,7 @@ public class RecurringTaskScheduler implements ApplicationListener<ApplicationRe
     private final ProjectService projectService;
     private final ScriptExecutionService scriptExecutionService;
     private final RecurringTaskNotifier notifier;
+    private final AgentMissionExecutionService agentMissionExecutionService;
 
     private final ConcurrentHashMap<String, ScheduledFuture<?>> scheduledFutures = new ConcurrentHashMap<>();
     private final Set<String> runningTasks = ConcurrentHashMap.newKeySet();
@@ -151,12 +154,24 @@ public class RecurringTaskScheduler implements ApplicationListener<ApplicationRe
             RecurringTaskRunOutcome outcome;
             try {
                 Project project = projectService.getProject(task.getProjectName());
-                ScriptExecutionResult result = scriptExecutionService.run(
-                        task.getCommand(), Path.of(project.getWorkingDirectory()));
-                RunStatus status = RunStatus.fromExitCode(result.exitCode());
-                String summary = truncate(pickSummary(result));
-                recurringTaskService.recordRunResult(name, now, result.exitCode(), status, summary);
-                outcome = new RecurringTaskRunOutcome(status, result.exitCode(), summary, null);
+                if (task.getExecutionMode() == RecurringTaskExecutionMode.AGENT_MISSION) {
+                    // Pas de code de sortie pour une mission agent (voir AgentMissionExecutionService) :
+                    // ClaudeCliService.call() leve deja une exception (attrapee ci-dessous, meme
+                    // chemin que ScriptExecutionException) en cas d'echec - un retour normal ici
+                    // est donc toujours un succes.
+                    ClaudeCliResult result = agentMissionExecutionService.run(
+                            task.getMissionPrompt(), Path.of(project.getWorkingDirectory()));
+                    String summary = truncate(result.getResult());
+                    recurringTaskService.recordAgentRunResult(name, now, summary);
+                    outcome = new RecurringTaskRunOutcome(RunStatus.OK, null, summary, null);
+                } else {
+                    ScriptExecutionResult result = scriptExecutionService.run(
+                            task.getCommand(), Path.of(project.getWorkingDirectory()));
+                    RunStatus status = RunStatus.fromExitCode(result.exitCode());
+                    String summary = truncate(pickSummary(result));
+                    recurringTaskService.recordRunResult(name, now, result.exitCode(), status, summary);
+                    outcome = new RecurringTaskRunOutcome(status, result.exitCode(), summary, null);
+                }
             } catch (Exception e) {
                 log.error("Echec d'execution de la tache recurrente '{}'", name, e);
                 recurringTaskService.recordRunError(name, now, e.getMessage());

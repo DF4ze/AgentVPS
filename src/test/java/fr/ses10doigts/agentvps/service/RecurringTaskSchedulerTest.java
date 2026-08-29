@@ -1,8 +1,10 @@
 package fr.ses10doigts.agentvps.service;
 
+import fr.ses10doigts.agentvps.model.ClaudeCliResult;
 import fr.ses10doigts.agentvps.model.NotificationPolicy;
 import fr.ses10doigts.agentvps.model.Project;
 import fr.ses10doigts.agentvps.model.RecurringTask;
+import fr.ses10doigts.agentvps.model.RecurringTaskExecutionMode;
 import fr.ses10doigts.agentvps.model.RecurringTaskRunOutcome;
 import fr.ses10doigts.agentvps.model.RecurringTaskStatus;
 import fr.ses10doigts.agentvps.model.RecurringTaskTriggerType;
@@ -48,11 +50,15 @@ class RecurringTaskSchedulerTest {
     @Mock
     private RecurringTaskNotifier notifier;
 
+    @Mock
+    private AgentMissionExecutionService agentMissionExecutionService;
+
     private RecurringTaskScheduler scheduler;
 
     @BeforeEach
     void setUp() {
-        scheduler = new RecurringTaskScheduler(taskScheduler, recurringTaskService, projectService, scriptExecutionService, notifier);
+        scheduler = new RecurringTaskScheduler(
+                taskScheduler, recurringTaskService, projectService, scriptExecutionService, notifier, agentMissionExecutionService);
         lenient().when(recurringTaskService.findTask("healthcheck")).thenReturn(Optional.of(task("healthcheck")));
         lenient().when(projectService.getProject("maintenance")).thenReturn(project("maintenance"));
     }
@@ -79,6 +85,49 @@ class RecurringTaskSchedulerTest {
         assertThat(outcome.status()).isEqualTo(RunStatus.ERROR);
         assertThat(outcome.exitCode()).isNull();
         verify(recurringTaskService).recordRunError(eq("healthcheck"), any(Instant.class), eq("Timeout depasse"));
+    }
+
+    // ------------------------------------------------------------ mode mission agent
+
+    @Test
+    void runNowExecutesAgentMissionAndRecordsResult() {
+        RecurringTask mission = agentMissionTask("crypto-analysis");
+        when(recurringTaskService.findTask("crypto-analysis")).thenReturn(Optional.of(mission));
+        ClaudeCliResult result = new ClaudeCliResult();
+        result.setResult("BTC en range, RSI neutre.");
+        when(agentMissionExecutionService.run(
+                eq("Analyse BTC quotidiennement"), eq(java.nio.file.Path.of("/home/agentvps/AgentVPS/projects/maintenance"))))
+                .thenReturn(result);
+
+        RecurringTaskRunOutcome outcome = scheduler.runNow("crypto-analysis");
+
+        assertThat(outcome.status()).isEqualTo(RunStatus.OK);
+        assertThat(outcome.exitCode()).isNull();
+        assertThat(outcome.outputSummary()).isEqualTo("BTC en range, RSI neutre.");
+        verify(recurringTaskService).recordAgentRunResult(
+                eq("crypto-analysis"), any(Instant.class), eq("BTC en range, RSI neutre."));
+        verify(scriptExecutionService, never()).run(any(), any());
+    }
+
+    @Test
+    void runNowRecordsErrorWhenAgentMissionCallFails() {
+        RecurringTask mission = agentMissionTask("crypto-analysis");
+        when(recurringTaskService.findTask("crypto-analysis")).thenReturn(Optional.of(mission));
+        when(agentMissionExecutionService.run(any(), any())).thenThrow(new ClaudeCliException("timeout"));
+
+        RecurringTaskRunOutcome outcome = scheduler.runNow("crypto-analysis");
+
+        assertThat(outcome.status()).isEqualTo(RunStatus.ERROR);
+        assertThat(outcome.exitCode()).isNull();
+        verify(recurringTaskService).recordRunError(eq("crypto-analysis"), any(Instant.class), eq("timeout"));
+    }
+
+    private static RecurringTask agentMissionTask(String name) {
+        RecurringTask task = task(name);
+        task.setExecutionMode(RecurringTaskExecutionMode.AGENT_MISSION);
+        task.setCommand(null);
+        task.setMissionPrompt("Analyse BTC quotidiennement");
+        return task;
     }
 
     @Test

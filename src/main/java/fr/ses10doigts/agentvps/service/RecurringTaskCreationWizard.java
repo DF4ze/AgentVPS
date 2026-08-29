@@ -3,6 +3,7 @@ package fr.ses10doigts.agentvps.service;
 import fr.ses10doigts.agentvps.model.NotificationPolicy;
 import fr.ses10doigts.agentvps.model.Project;
 import fr.ses10doigts.agentvps.model.RecurringTask;
+import fr.ses10doigts.agentvps.model.RecurringTaskExecutionMode;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -102,7 +103,9 @@ public class RecurringTaskCreationWizard {
         return switch (state.step) {
             case NAME -> handleName(state, trimmed);
             case PROJECT -> handleProject(state, trimmed);
+            case EXECUTION_MODE -> handleExecutionMode(state, trimmed);
             case SCRIPT -> handleScript(state, trimmed);
+            case MISSION_PROMPT -> handleMissionPrompt(state, trimmed);
             case NOTIFICATION -> handleNotification(state, trimmed);
             case FREQUENCY_MODE -> handleFrequencyMode(state, trimmed);
             case FREQUENCY_DAILY_TIME -> handleDailyTime(state, trimmed);
@@ -130,9 +133,8 @@ public class RecurringTaskCreationWizard {
         Optional<Project> active = projectService.getActiveProject();
         if (active.isPresent()) {
             state.projectName = active.get().getName();
-            state.step = Step.SCRIPT;
-            return "Elle sera rattachee au projet actif '" + state.projectName + "'.\n\n"
-                    + "Quelle commande faut-il executer, relative au dossier du projet ? Exemple : ./health_check.sh";
+            state.step = Step.EXECUTION_MODE;
+            return "Elle sera rattachee au projet actif '" + state.projectName + "'.\n\n" + executionModeQuestion();
         }
         state.step = Step.PROJECT;
         return "Aucun projet actif pour le moment. Sur quel projet doit-elle tourner ? Projets disponibles : "
@@ -144,8 +146,38 @@ public class RecurringTaskCreationWizard {
             return "Projet inconnu. Choisis parmi : " + String.join(", ", projectNames());
         }
         state.projectName = projectName;
-        state.step = Step.SCRIPT;
-        return "Quelle commande faut-il executer, relative au dossier du projet ? Exemple : ./health_check.sh";
+        state.step = Step.EXECUTION_MODE;
+        return executionModeQuestion();
+    }
+
+    private static String executionModeQuestion() {
+        return "Quel type de tache ?\n"
+                + "1. Executer un script/une commande\n"
+                + "2. Confier une mission a l'agent (texte libre : recherches, MCP, fichiers...)\n"
+                + "Reponds avec 1 ou 2.";
+    }
+
+    /**
+     * Bifurque entre les deux RecurringTaskExecutionMode (ajoute le 29/08/2026, demande
+     * Clem : "au-dela d'un simple script, pouvoir confier une mission a l'agent"). Le
+     * mode choisi determine si l'etape suivante demande une commande shell (SCRIPT,
+     * comportement d'origine) ou une mission en texte libre (AGENT_MISSION).
+     */
+    private String handleExecutionMode(WizardState state, String choice) {
+        return switch (choice) {
+            case "1" -> {
+                state.executionMode = RecurringTaskExecutionMode.SCRIPT;
+                state.step = Step.SCRIPT;
+                yield "Quelle commande faut-il executer, relative au dossier du projet ? Exemple : ./health_check.sh";
+            }
+            case "2" -> {
+                state.executionMode = RecurringTaskExecutionMode.AGENT_MISSION;
+                state.step = Step.MISSION_PROMPT;
+                yield "Decris la mission que l'agent doit accomplir (aussi detaillee que tu veux, "
+                        + "plusieurs lignes possibles) :";
+            }
+            default -> "Reponds avec 1 ou 2 : quel type de tache ?";
+        };
     }
 
     private String handleScript(WizardState state, String command) {
@@ -154,6 +186,19 @@ public class RecurringTaskCreationWizard {
         }
         state.command = command;
         state.step = Step.NOTIFICATION;
+        return notificationQuestion();
+    }
+
+    private String handleMissionPrompt(WizardState state, String missionPrompt) {
+        if (missionPrompt.isBlank()) {
+            return "La mission ne peut pas etre vide. Decris ce que l'agent doit accomplir :";
+        }
+        state.missionPrompt = missionPrompt;
+        state.step = Step.NOTIFICATION;
+        return notificationQuestion();
+    }
+
+    private static String notificationQuestion() {
         return "Quand veux-tu etre notifie sur Telegram ?\n"
                 + "1. A chaque execution\n"
                 + "2. Seulement en cas de souci (recommande)\n"
@@ -322,13 +367,7 @@ public class RecurringTaskCreationWizard {
         if (normalized.equals("oui") || normalized.equals("o") || normalized.equals("yes") || normalized.equals("y")) {
             sessions.remove(chatId);
             try {
-                RecurringTask task = state.oneTime
-                        ? recurringTaskManager.createOneTimeTask(
-                                state.name, state.projectName, state.command, state.scheduledAt,
-                                state.notificationPolicy, null)
-                        : recurringTaskManager.createTask(
-                                state.name, state.projectName, state.command, state.cronExpression,
-                                state.notificationPolicy, null);
+                RecurringTask task = createTaskFromState(state);
                 return "Tache '" + task.getName() + "' creee et active ! (" + state.frequencyDescription + ")";
             } catch (RecurringTaskException e) {
                 log.error("Echec de la creation de la tache '{}' via l'assistant", state.name, e);
@@ -342,14 +381,46 @@ public class RecurringTaskCreationWizard {
         return "Reponds par \"oui\" ou \"non\" : on cree la tache ?";
     }
 
+    /** Bifurque sur oneTime x executionMode (les 4 combinaisons de RecurringTaskManager.createXxx). */
+    private RecurringTask createTaskFromState(WizardState state) {
+        boolean isMission = state.executionMode == RecurringTaskExecutionMode.AGENT_MISSION;
+        if (state.oneTime) {
+            return isMission
+                    ? recurringTaskManager.createOneTimeAgentMissionTask(
+                            state.name, state.projectName, state.missionPrompt, state.scheduledAt,
+                            state.notificationPolicy, null)
+                    : recurringTaskManager.createOneTimeTask(
+                            state.name, state.projectName, state.command, state.scheduledAt,
+                            state.notificationPolicy, null);
+        }
+        return isMission
+                ? recurringTaskManager.createAgentMissionTask(
+                        state.name, state.projectName, state.missionPrompt, state.cronExpression,
+                        state.notificationPolicy, null)
+                : recurringTaskManager.createTask(
+                        state.name, state.projectName, state.command, state.cronExpression,
+                        state.notificationPolicy, null);
+    }
+
     private String recap(WizardState state) {
+        String actionLine = state.executionMode == RecurringTaskExecutionMode.AGENT_MISSION
+                ? "Mission : " + truncateForRecap(state.missionPrompt)
+                : "Commande : " + state.command;
         return "Recapitulatif :\n"
                 + "Nom : " + state.name + "\n"
                 + "Projet : " + state.projectName + "\n"
-                + "Commande : " + state.command + "\n"
+                + actionLine + "\n"
                 + "Notification : " + describePolicy(state.notificationPolicy) + "\n"
                 + "Frequence : " + state.frequencyDescription + "\n\n"
                 + "On cree la tache ? (oui/non)";
+    }
+
+    /** Evite un recapitulatif interminable si la mission est un texte tres detaille - le texte complet reste stocke tel quel. */
+    private static String truncateForRecap(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.length() > 300 ? text.substring(0, 300) + "... (tronque, texte complet conserve)" : text;
     }
 
     private List<String> projectNames() {
@@ -365,15 +436,18 @@ public class RecurringTaskCreationWizard {
     }
 
     private enum Step {
-        NAME, PROJECT, SCRIPT, NOTIFICATION, FREQUENCY_MODE, FREQUENCY_DAILY_TIME, FREQUENCY_MINUTES,
-        FREQUENCY_CUSTOM_CRON, FREQUENCY_ONE_TIME_CHOICE, FREQUENCY_ONE_TIME_TIME, FREQUENCY_ONE_TIME_DATETIME, CONFIRM
+        NAME, PROJECT, EXECUTION_MODE, SCRIPT, MISSION_PROMPT, NOTIFICATION, FREQUENCY_MODE, FREQUENCY_DAILY_TIME,
+        FREQUENCY_MINUTES, FREQUENCY_CUSTOM_CRON, FREQUENCY_ONE_TIME_CHOICE, FREQUENCY_ONE_TIME_TIME,
+        FREQUENCY_ONE_TIME_DATETIME, CONFIRM
     }
 
     private static final class WizardState {
         private Step step = Step.NAME;
         private String name;
         private String projectName;
+        private RecurringTaskExecutionMode executionMode = RecurringTaskExecutionMode.SCRIPT;
         private String command;
+        private String missionPrompt;
         private NotificationPolicy notificationPolicy;
         private String cronExpression;
         private String frequencyDescription;

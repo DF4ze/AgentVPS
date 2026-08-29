@@ -116,13 +116,60 @@ class RecurringTaskCreationWizardTest {
     // --------------------------------------------------- projet par defaut
 
     @Test
-    void nameStepSkipsToScriptAndUsesTheActiveProjectWhenOneExists() {
+    void nameStepSkipsToExecutionModeAndUsesTheActiveProjectWhenOneExists() {
         when(projectService.getActiveProject()).thenReturn(Optional.of(project("maintenance")));
         wizard.start(CHAT_ID);
 
         String reply = wizard.handleReply(CHAT_ID, "healthcheck");
 
-        assertThat(reply).contains("projet actif 'maintenance'").contains("Quelle commande");
+        assertThat(reply).contains("projet actif 'maintenance'").contains("Quel type de tache");
+    }
+
+    // ------------------------------------------------------------- type de tache
+
+    @Test
+    void executionModeStepAsksForCommandWhenScriptChosen() {
+        when(projectService.getActiveProject()).thenReturn(Optional.of(project("maintenance")));
+        wizard.start(CHAT_ID);
+        wizard.handleReply(CHAT_ID, "healthcheck");
+
+        String reply = wizard.handleReply(CHAT_ID, "1");
+
+        assertThat(reply).contains("Quelle commande");
+    }
+
+    @Test
+    void executionModeStepAsksForAMissionWhenAgentChosen() {
+        when(projectService.getActiveProject()).thenReturn(Optional.of(project("maintenance")));
+        wizard.start(CHAT_ID);
+        wizard.handleReply(CHAT_ID, "crypto-analysis");
+
+        String reply = wizard.handleReply(CHAT_ID, "2");
+
+        assertThat(reply).contains("Decris la mission");
+    }
+
+    @Test
+    void invalidExecutionModeChoiceIsRejected() {
+        when(projectService.getActiveProject()).thenReturn(Optional.of(project("maintenance")));
+        wizard.start(CHAT_ID);
+        wizard.handleReply(CHAT_ID, "healthcheck");
+
+        String reply = wizard.handleReply(CHAT_ID, "9");
+
+        assertThat(reply).contains("1 ou 2");
+    }
+
+    @Test
+    void blankMissionPromptIsRejected() {
+        when(projectService.getActiveProject()).thenReturn(Optional.of(project("maintenance")));
+        wizard.start(CHAT_ID);
+        wizard.handleReply(CHAT_ID, "crypto-analysis");
+        wizard.handleReply(CHAT_ID, "2");
+
+        String reply = wizard.handleReply(CHAT_ID, "   ");
+
+        assertThat(reply).contains("mission ne peut pas etre vide");
     }
 
     @Test
@@ -153,6 +200,7 @@ class RecurringTaskCreationWizardTest {
         when(projectService.getActiveProject()).thenReturn(Optional.of(project("maintenance")));
         wizard.start(CHAT_ID);
         wizard.handleReply(CHAT_ID, "healthcheck");
+        wizard.handleReply(CHAT_ID, "1");
 
         String reply = wizard.handleReply(CHAT_ID, "  ");
 
@@ -319,6 +367,55 @@ class RecurringTaskCreationWizardTest {
         verify(recurringTaskManager, never()).createTask(any(), any(), any(), any(), any(), any());
     }
 
+    // -------------------------------------------------------- mode mission agent
+
+    @Test
+    void recapShowsMissionInsteadOfCommandForAnAgentMissionTask() {
+        goToFrequencyStepForMission();
+
+        String reply = wizard.handleReply(CHAT_ID, "2");
+
+        assertThat(reply).contains("Mission : Analyse BTC chaque matin et resume la tendance")
+                .doesNotContain("Commande :");
+    }
+
+    @Test
+    void confirmingAnAgentMissionTaskCallsCreateAgentMissionTask() {
+        goToFrequencyStepForMission();
+        wizard.handleReply(CHAT_ID, "2");
+        RecurringTask created = new RecurringTask();
+        created.setName("crypto-analysis");
+        when(recurringTaskManager.createAgentMissionTask(
+                eq("crypto-analysis"), eq("maintenance"), eq("Analyse BTC chaque matin et resume la tendance"),
+                eq("0 0 * * * *"), eq(NotificationPolicy.ON_ISSUE), any()))
+                .thenReturn(created);
+
+        String reply = wizard.handleReply(CHAT_ID, "oui");
+
+        assertThat(reply).contains("crypto-analysis' creee et active");
+        verify(recurringTaskManager, never()).createTask(any(), any(), any(), any(), any(), any());
+        verify(recurringTaskManager, never()).createOneTimeAgentMissionTask(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void confirmingAOneTimeAgentMissionTaskCallsCreateOneTimeAgentMissionTask() {
+        goToFrequencyStepForMission();
+        wizard.handleReply(CHAT_ID, "5");
+        wizard.handleReply(CHAT_ID, "4");
+        wizard.handleReply(CHAT_ID, "05/09/2099 14:30");
+        RecurringTask created = new RecurringTask();
+        created.setName("crypto-analysis");
+        when(recurringTaskManager.createOneTimeAgentMissionTask(
+                eq("crypto-analysis"), eq("maintenance"), eq("Analyse BTC chaque matin et resume la tendance"),
+                any(Instant.class), eq(NotificationPolicy.ON_ISSUE), any()))
+                .thenReturn(created);
+
+        String reply = wizard.handleReply(CHAT_ID, "oui");
+
+        assertThat(reply).contains("crypto-analysis' creee et active");
+        verify(recurringTaskManager, never()).createAgentMissionTask(any(), any(), any(), any(), any(), any());
+    }
+
     // ------------------------------------------------------------- confirm
 
     @Test
@@ -386,6 +483,7 @@ class RecurringTaskCreationWizardTest {
         when(projectService.getActiveProject()).thenReturn(Optional.of(project("maintenance")));
         wizard.start(CHAT_ID);
         wizard.handleReply(CHAT_ID, "healthcheck");
+        wizard.handleReply(CHAT_ID, "1");
         wizard.handleReply(CHAT_ID, "./health_check.sh");
     }
 
@@ -396,6 +494,19 @@ class RecurringTaskCreationWizardTest {
 
     private void goToConfirmStep() {
         goToFrequencyStep();
+        wizard.handleReply(CHAT_ID, "2");
+    }
+
+    private void goToNotificationStepForMission() {
+        when(projectService.getActiveProject()).thenReturn(Optional.of(project("maintenance")));
+        wizard.start(CHAT_ID);
+        wizard.handleReply(CHAT_ID, "crypto-analysis");
+        wizard.handleReply(CHAT_ID, "2");
+        wizard.handleReply(CHAT_ID, "Analyse BTC chaque matin et resume la tendance");
+    }
+
+    private void goToFrequencyStepForMission() {
+        goToNotificationStepForMission();
         wizard.handleReply(CHAT_ID, "2");
     }
 

@@ -5,6 +5,7 @@ import fr.ses10doigts.agentvps.config.JacksonConfig;
 import fr.ses10doigts.agentvps.config.WorkspaceProperties;
 import fr.ses10doigts.agentvps.model.NotificationPolicy;
 import fr.ses10doigts.agentvps.model.RecurringTask;
+import fr.ses10doigts.agentvps.model.RecurringTaskExecutionMode;
 import fr.ses10doigts.agentvps.model.RecurringTaskStatus;
 import fr.ses10doigts.agentvps.model.RecurringTaskTriggerType;
 import fr.ses10doigts.agentvps.model.RunStatus;
@@ -157,6 +158,71 @@ class RecurringTaskServiceTest {
 
         assertThat(task.getTriggerType()).isEqualTo(RecurringTaskTriggerType.CRON);
         assertThat(task.getScheduledAt()).isNull();
+    }
+
+    // -------------------------------------------------------- mode mission agent
+
+    @Test
+    void createAgentMissionTaskSucceedsAndLeavesCommandNull() {
+        RecurringTask task = service.createAgentMissionTask(
+                "crypto-analysis", "maintenance", "Analyse BTC tous les matins et resume la tendance",
+                "0 0 8 * * *", NotificationPolicy.ALWAYS, "Analyse crypto quotidienne");
+
+        assertThat(task.getExecutionMode()).isEqualTo(RecurringTaskExecutionMode.AGENT_MISSION);
+        assertThat(task.getMissionPrompt()).isEqualTo("Analyse BTC tous les matins et resume la tendance");
+        assertThat(task.getCommand()).isNull();
+        assertThat(task.getCronExpression()).isEqualTo("0 0 8 * * *");
+    }
+
+    @Test
+    void createAgentMissionTaskRejectsBlankMissionPrompt() {
+        assertThatThrownBy(() -> service.createAgentMissionTask(
+                "crypto-analysis", "maintenance", "   ", "@daily", null, null))
+                .isInstanceOf(RecurringTaskException.class);
+    }
+
+    @Test
+    void createAgentMissionTaskRejectsUnknownProject() {
+        assertThatThrownBy(() -> service.createAgentMissionTask(
+                "crypto-analysis", "inconnu", "Analyse BTC", "@daily", null, null))
+                .isInstanceOf(RecurringTaskException.class)
+                .hasMessageContaining("inconnu");
+    }
+
+    @Test
+    void createOneTimeAgentMissionTaskSucceedsAndLeavesCommandNull() {
+        Instant scheduledAt = Instant.now().plusSeconds(3600);
+
+        RecurringTask task = service.createOneTimeAgentMissionTask(
+                "rappel-analyse", "maintenance", "Analyse BTC une fois", scheduledAt, NotificationPolicy.ALWAYS, null);
+
+        assertThat(task.getExecutionMode()).isEqualTo(RecurringTaskExecutionMode.AGENT_MISSION);
+        assertThat(task.getTriggerType()).isEqualTo(RecurringTaskTriggerType.ONE_TIME);
+        assertThat(task.getMissionPrompt()).isEqualTo("Analyse BTC une fois");
+        assertThat(task.getCommand()).isNull();
+        assertThat(task.getScheduledAt()).isEqualTo(scheduledAt);
+    }
+
+    @Test
+    void createOneTimeAgentMissionTaskRejectsAPastScheduledAt() {
+        assertThatThrownBy(() -> service.createOneTimeAgentMissionTask(
+                "rappel-analyse", "maintenance", "Analyse BTC", Instant.now().minusSeconds(60), null, null))
+                .isInstanceOf(RecurringTaskException.class);
+    }
+
+    @Test
+    void recordAgentRunResultUpdatesLastRunFieldsWithoutExitCode() {
+        service.createAgentMissionTask(
+                "crypto-analysis", "maintenance", "Analyse BTC", "@daily", null, null);
+
+        service.recordAgentRunResult("crypto-analysis", Instant.parse("2026-08-29T08:00:00Z"), "BTC en range.");
+
+        RecurringTask task = service.getTask("crypto-analysis");
+        assertThat(task.getLastRunAt()).isEqualTo(Instant.parse("2026-08-29T08:00:00Z"));
+        assertThat(task.getLastExitCode()).isNull();
+        assertThat(task.getLastRunStatus()).isEqualTo(RunStatus.OK);
+        assertThat(task.getLastOutputSummary()).isEqualTo("BTC en range.");
+        assertThat(task.getLastErrorMessage()).isNull();
     }
 
     @Test

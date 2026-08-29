@@ -64,14 +64,33 @@ public class ClaudeCliService {
      * @param appendSystemPrompt texte ajoute au system prompt par defaut de claude, ou null/vide pour l'omettre
      */
     public ClaudeCliResult call(String prompt, String resumeSessionId, Path workingDirectory, String appendSystemPrompt) {
+        return call(prompt, resumeSessionId, workingDirectory, appendSystemPrompt, null);
+    }
+
+    /**
+     * Variante de call() acceptant en plus un timeout dedie (secondes), qui remplace
+     * agentvps.claude.timeout-seconds pour cet appel uniquement - utilisee par
+     * AgentMissionExecutionService (roadmap Phase 7, mode "mission agent", ajoute le
+     * 29/08/2026) : une mission autonome peut enchainer plusieurs appels reseau/MCP,
+     * largement au-dela du delai raisonnable pour une reponse de chat interactif.
+     *
+     * @param timeoutSecondsOverride delai maximum (secondes) avant destruction forcee du
+     *                                process pour cet appel, ou null pour garder
+     *                                properties.getTimeoutSeconds() (comportement des
+     *                                autres overloads de call())
+     */
+    public ClaudeCliResult call(String prompt, String resumeSessionId, Path workingDirectory,
+                                 String appendSystemPrompt, Integer timeoutSecondsOverride) {
         if (prompt == null || prompt.isBlank()) {
             throw new IllegalArgumentException("Le prompt ne peut pas etre vide");
         }
 
+        int effectiveTimeoutSeconds = timeoutSecondsOverride != null ? timeoutSecondsOverride : properties.getTimeoutSeconds();
+
         List<String> command = buildCommand(prompt, resumeSessionId, appendSystemPrompt);
-        log.info("Appel claude CLI (provider={}, resume={}, cwd={}, appendSystemPrompt={})",
+        log.info("Appel claude CLI (provider={}, resume={}, cwd={}, appendSystemPrompt={}, timeoutSeconds={})",
                 properties.getProvider(), resumeSessionId != null, workingDirectory,
-                appendSystemPrompt != null && !appendSystemPrompt.isBlank());
+                appendSystemPrompt != null && !appendSystemPrompt.isBlank(), effectiveTimeoutSeconds);
         log.debug("Commande : {}", command);
 
         ProcessBuilder processBuilder = new ProcessBuilder(command);
@@ -107,7 +126,7 @@ public class ClaudeCliService {
 
         boolean finished;
         try {
-            finished = process.waitFor(properties.getTimeoutSeconds(), TimeUnit.SECONDS);
+            finished = process.waitFor(effectiveTimeoutSeconds, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             process.destroyForcibly();
@@ -117,7 +136,7 @@ public class ClaudeCliService {
         if (!finished) {
             process.destroyForcibly();
             throw new ClaudeCliException(
-                    "Timeout (" + properties.getTimeoutSeconds() + "s) depasse lors de l'appel claude CLI");
+                    "Timeout (" + effectiveTimeoutSeconds + "s) depasse lors de l'appel claude CLI");
         }
 
         joinQuietly(stdoutThread);

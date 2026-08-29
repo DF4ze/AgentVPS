@@ -82,6 +82,10 @@ agentvps:
     # repertoire de travail d'un projet (voir RecurringTaskScheduler). Delai maximum
     # avant destruction forcee du process d'un script en cours.
     timeout-seconds: ${AGENTVPS_RECURRING_TASKS_TIMEOUT_SECONDS:120}
+    # Delai maximum (secondes) pour une mission agent (mode AGENT_MISSION, distinct du
+    # timeout-seconds ci-dessus qui ne s'applique qu'aux scripts) - une mission peut
+    # enchainer plusieurs appels reseau/MCP.
+    agent-mission-timeout-seconds: ${AGENTVPS_RECURRING_TASKS_AGENT_MISSION_TIMEOUT_SECONDS:600}
     # Taille du pool de threads dedie a la planification/execution des taches recurrentes.
     scheduler-pool-size: ${AGENTVPS_RECURRING_TASKS_SCHEDULER_POOL_SIZE:4}
     # Identifiant de chat Telegram (numerique) recevant les notifications automatiques
