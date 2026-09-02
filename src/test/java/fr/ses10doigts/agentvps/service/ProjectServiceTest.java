@@ -19,11 +19,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ProjectServiceTest {
 
     private ProjectService service;
+    private WorkspaceProperties workspaceProperties;
 
     @BeforeEach
     void setUp(@TempDir Path tempDir) {
         ObjectMapper objectMapper = new JacksonConfig().objectMapper();
-        WorkspaceProperties workspaceProperties = new WorkspaceProperties();
+        workspaceProperties = new WorkspaceProperties();
         workspaceProperties.setRootDir(tempDir.toString());
         ProjectStoreRepository repository = new JsonProjectStoreRepository(objectMapper, workspaceProperties);
         service = new ProjectService(repository, workspaceProperties);
@@ -44,6 +45,25 @@ class ProjectServiceTest {
         Project project = service.createProject("  Été Côté Serveur !! ");
 
         assertThat(project.getName()).isEqualTo("ete-cote-serveur");
+    }
+
+    @Test
+    void createProjectMarksSystemSlugAsElevatedWithRootWorkingDirectory() {
+        Project project = service.createProject("System");
+
+        assertThat(project.getName()).isEqualTo("system");
+        assertThat(project.isElevated()).isTrue();
+        // Contrairement aux autres projets, PAS de sous-dossier projects/<slug> : le cwd
+        // est la racine du workspace elle-meme (voir ProjectService.ELEVATED_PROJECT_SLUG).
+        assertThat(project.getWorkingDirectory()).isEqualTo(workspaceProperties.rootDirPath().toString());
+    }
+
+    @Test
+    void createProjectLeavesOrdinaryProjectsNonElevated() {
+        Project project = service.createProject("Mon Projet");
+
+        assertThat(project.isElevated()).isFalse();
+        assertThat(project.getWorkingDirectory()).endsWith("projects" + java.io.File.separator + "mon-projet");
     }
 
     @Test

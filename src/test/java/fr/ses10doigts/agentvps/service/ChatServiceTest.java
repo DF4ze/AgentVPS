@@ -45,6 +45,7 @@ class ChatServiceTest {
     void setUp() {
         ClaudeCliProperties properties = new ClaudeCliProperties();
         properties.setReinforcementEveryMessages(10);
+        properties.setElevatedSettingsPath("/home/agentvps/.config/agentvps/claude-settings-system.json");
         chatService = new ChatService(projectService, claudeCliService, properties);
     }
 
@@ -56,7 +57,7 @@ class ChatServiceTest {
         ClaudeCliResult claudeResult = new ClaudeCliResult();
         claudeResult.setSessionId("session-1");
         claudeResult.setResult("Bonjour !");
-        when(claudeCliService.call(any(), isNull(), eq(Path.of(project.getWorkingDirectory())), any()))
+        when(claudeCliService.call(any(), isNull(), eq(Path.of(project.getWorkingDirectory())), any(), isNull(), isNull()))
                 .thenReturn(claudeResult);
 
         ClaudeCliResult result = chatService.sendMessage(project, "Salut");
@@ -64,7 +65,7 @@ class ChatServiceTest {
         assertThat(result).isEqualTo(claudeResult);
         verify(claudeCliService).call(
                 argThat(prompt -> prompt.contains("Salut") && prompt.contains("mémoire durable")),
-                isNull(), eq(Path.of(project.getWorkingDirectory())), any());
+                isNull(), eq(Path.of(project.getWorkingDirectory())), any(), isNull(), isNull());
         verify(projectService).recordConversationStart("mon-projet", "session-1", null);
         verify(projectService, never()).touchConversation(any(), any());
         verify(projectService, never()).recordReinforcementOutcome(any(), any(), anyBoolean());
@@ -77,13 +78,13 @@ class ChatServiceTest {
 
         ClaudeCliResult claudeResult = new ClaudeCliResult();
         claudeResult.setResult("Ok");
-        when(claudeCliService.call(any(), eq("session-1"), any(), any())).thenReturn(claudeResult);
+        when(claudeCliService.call(any(), eq("session-1"), any(), any(), isNull(), isNull())).thenReturn(claudeResult);
 
         chatService.sendMessage(project, "Continue");
 
         verify(claudeCliService).call(
                 argThat(prompt -> prompt.contains("Continue") && prompt.contains("mémoire durable")),
-                eq("session-1"), eq(Path.of(project.getWorkingDirectory())), any());
+                eq("session-1"), eq(Path.of(project.getWorkingDirectory())), any(), isNull(), isNull());
         verify(projectService).touchConversation("mon-projet", "session-1");
         verify(projectService).recordReinforcementOutcome("mon-projet", "session-1", true);
         verify(projectService, never()).recordConversationStart(any(), any(), any());
@@ -96,11 +97,11 @@ class ChatServiceTest {
 
         ClaudeCliResult claudeResult = new ClaudeCliResult();
         claudeResult.setResult("Ok");
-        when(claudeCliService.call(eq("Continue"), eq("session-1"), any(), any())).thenReturn(claudeResult);
+        when(claudeCliService.call(eq("Continue"), eq("session-1"), any(), any(), isNull(), isNull())).thenReturn(claudeResult);
 
         chatService.sendMessage(project, "Continue");
 
-        verify(claudeCliService).call(eq("Continue"), eq("session-1"), eq(Path.of(project.getWorkingDirectory())), any());
+        verify(claudeCliService).call(eq("Continue"), eq("session-1"), eq(Path.of(project.getWorkingDirectory())), any(), isNull(), isNull());
         verify(projectService).recordReinforcementOutcome("mon-projet", "session-1", false);
     }
 
@@ -111,19 +112,20 @@ class ChatServiceTest {
         ClaudeCliResult claudeResult = new ClaudeCliResult();
         claudeResult.setSessionId("session-1");
         claudeResult.setResult("ok");
-        when(claudeCliService.call(any(), any(), any(), any())).thenReturn(claudeResult);
+        when(claudeCliService.call(any(), any(), any(), any(), any(), any())).thenReturn(claudeResult);
 
         chatService.sendMessage(project, "Salut");
 
         verify(claudeCliService).call(any(), any(), any(), argThat(prompt ->
-                prompt.contains("agent personnel de Clem") && prompt.contains("Telegram affiche du texte brut")));
+                prompt.contains("agent personnel de Clem") && prompt.contains("Telegram affiche du texte brut")),
+                any(), any());
     }
 
     @Test
     void aFailedClaudeCallDoesNotTouchProjectServiceState() {
         Project project = project("mon-projet", "session-1");
         when(projectService.isReinforcementDue("mon-projet", "session-1", 10)).thenReturn(false);
-        when(claudeCliService.call(any(), any(), any(), any())).thenThrow(new ClaudeCliException("timeout"));
+        when(claudeCliService.call(any(), any(), any(), any(), any(), any())).thenThrow(new ClaudeCliException("timeout"));
 
         assertThatThrownBy(() -> chatService.sendMessage(project, "Continue"))
                 .isInstanceOf(ClaudeCliException.class);
@@ -131,6 +133,41 @@ class ChatServiceTest {
         verify(projectService, never()).touchConversation(any(), any());
         verify(projectService, never()).recordReinforcementOutcome(any(), any(), anyBoolean());
         verify(projectService, never()).recordConversationStart(any(), any(), any());
+    }
+
+    @Test
+    void elevatedProjectUsesTheElevatedSettingsPath() {
+        Project project = project("system", null);
+        project.setElevated(true);
+        when(projectService.isReinforcementDue("system", null, 10)).thenReturn(true);
+
+        ClaudeCliResult claudeResult = new ClaudeCliResult();
+        claudeResult.setSessionId("session-1");
+        claudeResult.setResult("Ok");
+        when(claudeCliService.call(any(), isNull(), any(), any(), isNull(),
+                eq("/home/agentvps/.config/agentvps/claude-settings-system.json")))
+                .thenReturn(claudeResult);
+
+        chatService.sendMessage(project, "Salut");
+
+        verify(claudeCliService).call(any(), isNull(), eq(Path.of(project.getWorkingDirectory())), any(),
+                isNull(), eq("/home/agentvps/.config/agentvps/claude-settings-system.json"));
+    }
+
+    @Test
+    void nonElevatedProjectOmitsTheSettingsPathOverride() {
+        Project project = project("mon-projet", null);
+        when(projectService.isReinforcementDue("mon-projet", null, 10)).thenReturn(true);
+
+        ClaudeCliResult claudeResult = new ClaudeCliResult();
+        claudeResult.setSessionId("session-1");
+        claudeResult.setResult("Ok");
+        when(claudeCliService.call(any(), isNull(), any(), any(), isNull(), isNull())).thenReturn(claudeResult);
+
+        chatService.sendMessage(project, "Salut");
+
+        verify(claudeCliService).call(any(), isNull(), eq(Path.of(project.getWorkingDirectory())), any(),
+                isNull(), isNull());
     }
 
     private static Project project(String name, String currentSessionId) {

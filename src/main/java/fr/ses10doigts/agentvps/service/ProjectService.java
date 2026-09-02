@@ -35,6 +35,19 @@ import java.util.Optional;
 @Slf4j
 public class ProjectService {
 
+    /**
+     * Slug reserve qui marque un projet comme "System" (droits elargis, voir Project.elevated
+     * et memoire projet "god_mode_system_project"). Cree via /projet new system (ou "System" -
+     * slugify() retire les majuscules mais PAS les accents en dehors de leur forme NFD ; "Systeme"
+     * slugifierait en "systeme", qui ne matche pas - le nom a utiliser est bien le mot anglais).
+     * Contrairement a un projet normal, son working directory est la racine du workspace
+     * (WorkspaceProperties.rootDir()) et pas un sous-dossier isole sous projectsDir() : ca
+     * elargit la portee des regles Read/Write/Edit(**) du settings.json (deja relatives au cwd,
+     * voir claude_fs_permissions.md) a tous les autres projets AgentVPS, sans toucher au deny
+     * (secrets ~/.ssh/~/.claude/~/.ori, /etc, /root, sudo, rm -rf restent proteges partout).
+     */
+    static final String ELEVATED_PROJECT_SLUG = "system";
+
     private final ProjectStoreRepository repository;
     private final WorkspaceProperties workspaceProperties;
     private final Object lock = new Object();
@@ -78,7 +91,11 @@ public class ProjectService {
                 throw new ProjectException("Un projet nomme '" + slug + "' existe deja");
             }
 
-            Path dir = workspaceProperties.projectsDir().resolve(slug);
+            boolean elevated = ELEVATED_PROJECT_SLUG.equals(slug);
+            // Projet "system" : cwd remonte a la racine du workspace (voir ELEVATED_PROJECT_SLUG),
+            // au lieu du sous-dossier isole habituel sous projectsDir(). rootDirPath() existe deja
+            // (c'est le dossier de l'appli elle-meme) donc createDirectories() est un no-op ici.
+            Path dir = elevated ? workspaceProperties.rootDirPath() : workspaceProperties.projectsDir().resolve(slug);
             try {
                 Files.createDirectories(dir);
             } catch (IOException e) {
@@ -90,11 +107,12 @@ public class ProjectService {
             project.setStatus(ProjectStatus.ACTIVE);
             project.setCreatedAt(Instant.now());
             project.setWorkingDirectory(dir.toString());
+            project.setElevated(elevated);
 
             store().getProjects().put(slug, project);
             store().setActiveProjectName(slug);
             persist();
-            log.info("Projet '{}' cree (dossier {})", slug, dir);
+            log.info("Projet '{}' cree (dossier {}, elevated={})", slug, dir, elevated);
             return project;
         }
     }

@@ -1,10 +1,12 @@
 {
-  "//": "Politique de permissions Claude Code pour AgentVPS (Phase 1 de la roadmap). Passee via --settings, combinee a --permission-mode dontAsk (voir ClaudeCliProperties/ClaudeCliService). Une regle deny l'emporte toujours sur allow. En dontAsk, tout ce qui n'est ni dans allow ni dans deny est refuse automatiquement (pas de personne pour repondre a 'ask'). Les patterns sans / initial sont relatifs au repertoire de travail du process claude (le dossier du projet actif, voir roadmap Phase 3 point 6).",
+  "//": "Politique de permissions Claude Code pour AgentVPS (Phase 1 de la roadmap). Passee via --settings, combinee a --permission-mode dontAsk (voir ClaudeCliProperties/ClaudeCliService). Une regle deny l'emporte toujours sur allow. En dontAsk, tout ce qui n'est ni dans allow ni dans deny est refuse automatiquement (pas de personne pour repondre a 'ask'). Les patterns sans / initial sont relatifs au repertoire de travail du process claude (le dossier du projet actif, voir roadmap Phase 3 point 6). Ajoute le 02/09/2026 (suite au constat que l agent repondait ne pas avoir les droits d aller sur internet) : WebSearch et WebFetch dans allow (formes nues, sans restriction de domaine) pour permettre les recherches et lectures web - la sandbox reseau des commandes Bash (curl/wget) n est pas concernee, ces commandes restent hors allow donc non utilisables directement.",
   "permissions": {
     "allow": [
       "Read(**)",
       "Write(**)",
       "Edit(**)",
+      "WebSearch",
+      "WebFetch",
       "Bash(ls)",
       "Bash(ls *)",
       "Bash(pwd)",

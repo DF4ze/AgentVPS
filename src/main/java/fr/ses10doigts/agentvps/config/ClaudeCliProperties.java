@@ -41,6 +41,23 @@ public class ClaudeCliProperties {
     private String settingsPath = "/home/agentvps/.config/agentvps/claude-settings.json";
 
     /**
+     * Fichier --settings utilise a la place de settingsPath pour un projet a droits
+     * elargis (Project.elevated, voir ProjectService.ELEVATED_PROJECT_SLUG et
+     * ChatService.sendMessage). Meme deny qu'en production (secrets ~/.ssh, ~/.claude,
+     * ~/.ori toujours proteges, /etc et /root toujours en lecture seule, sudo/rm -rf
+     * toujours refuses) - la difference tient au working directory du projet "system"
+     * (remonte a la racine du workspace au lieu d'un sous-dossier isole, ce qui etend
+     * la portee des regles Read/Write/Edit(**), deja relatives au cwd) et a quelques
+     * commandes Bash de diagnostic supplementaires (ps, df, du, uname...). Voir la
+     * memoire projet "god_mode_system_project" pour le detail de la conception :
+     * accede volontairement PAS aux autres applications du VPS (CourseCrawler,
+     * Instabot, CristalBot tournent sous l'utilisateur systeme oklm, home 700,
+     * invisible pour agentvps quel que soit ce fichier) - ca reste une decision
+     * separee (ACL/groupe Linux dedie, ou operations gateway SSH curatees).
+     */
+    private String elevatedSettingsPath = "/home/agentvps/.config/agentvps/claude-settings-system.json";
+
+    /**
      * Coupe l'"auto memory" native de Claude Code (notes que claude redige de sa
      * propre initiative entre sessions dans ~/.claude/projects/<projet>/memory/,
      * fonctionnalite distincte de CLAUDE.md - voir <a href="https://code.claude.com/docs/en/memory">...</a>).

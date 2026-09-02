@@ -81,13 +81,31 @@ public class ClaudeCliService {
      */
     public ClaudeCliResult call(String prompt, String resumeSessionId, Path workingDirectory,
                                  String appendSystemPrompt, Integer timeoutSecondsOverride) {
+        return call(prompt, resumeSessionId, workingDirectory, appendSystemPrompt, timeoutSecondsOverride, null);
+    }
+
+    /**
+     * Variante de call() acceptant en plus un chemin --settings dedie, qui remplace
+     * agentvps.claude.settings-path pour cet appel uniquement - utilisee par ChatService
+     * pour un projet a droits elargis (Project.elevated, voir ClaudeCliProperties.elevatedSettingsPath
+     * et la memoire projet "god_mode_system_project"). Les autres appelants (onboarding,
+     * mission agent) passent par les overloads existants et continuent d'utiliser
+     * properties.getSettingsPath() sans rien changer a leur comportement.
+     *
+     * @param settingsPathOverride chemin --settings a utiliser pour cet appel, ou null/vide
+     *                              pour garder properties.getSettingsPath() (comportement des
+     *                              autres overloads de call())
+     */
+    public ClaudeCliResult call(String prompt, String resumeSessionId, Path workingDirectory,
+                                 String appendSystemPrompt, Integer timeoutSecondsOverride,
+                                 String settingsPathOverride) {
         if (prompt == null || prompt.isBlank()) {
             throw new IllegalArgumentException("Le prompt ne peut pas etre vide");
         }
 
         int effectiveTimeoutSeconds = timeoutSecondsOverride != null ? timeoutSecondsOverride : properties.getTimeoutSeconds();
 
-        List<String> command = buildCommand(prompt, resumeSessionId, appendSystemPrompt);
+        List<String> command = buildCommand(prompt, resumeSessionId, appendSystemPrompt, settingsPathOverride);
         log.info("Appel claude CLI (provider={}, resume={}, cwd={}, appendSystemPrompt={}, timeoutSeconds={})",
                 properties.getProvider(), resumeSessionId != null, workingDirectory,
                 appendSystemPrompt != null && !appendSystemPrompt.isBlank(), effectiveTimeoutSeconds);
@@ -179,6 +197,18 @@ public class ClaudeCliService {
      * 29/08/2026 (appel -p reel avec openai/gpt-5, meme schema JSON en sortie).
      */
     List<String> buildCommand(String prompt, String resumeSessionId, String appendSystemPrompt) {
+        return buildCommand(prompt, resumeSessionId, appendSystemPrompt, null);
+    }
+
+    /**
+     * Variante de buildCommand() acceptant en plus un chemin --settings dedie (voir le
+     * call() a 6 arguments ci-dessus pour le contexte complet).
+     *
+     * @param settingsPathOverride chemin --settings a utiliser, ou null/vide pour garder
+     *                              properties.getSettingsPath()
+     */
+    List<String> buildCommand(String prompt, String resumeSessionId, String appendSystemPrompt,
+                               String settingsPathOverride) {
         List<String> command = new ArrayList<>();
         if (properties.getProvider() == ClaudeProvider.OPENROUTER) {
             command.add(properties.getOpenRouterBinaryPath());
@@ -206,9 +236,12 @@ public class ClaudeCliService {
             command.add("--permission-mode");
             command.add(properties.getPermissionMode());
         }
-        if (properties.getSettingsPath() != null && !properties.getSettingsPath().isBlank()) {
+        String effectiveSettingsPath = (settingsPathOverride != null && !settingsPathOverride.isBlank())
+                ? settingsPathOverride
+                : properties.getSettingsPath();
+        if (effectiveSettingsPath != null && !effectiveSettingsPath.isBlank()) {
             command.add("--settings");
-            command.add(properties.getSettingsPath());
+            command.add(effectiveSettingsPath);
         }
         return command;
     }

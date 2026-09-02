@@ -53,8 +53,16 @@ public class ChatService {
 
         String prompt = reinforcementDue ? REINFORCEMENT_PREFIX + text : text;
 
+        // Projet a droits elargis (ELEVATED_PROJECT_SLUG, voir ProjectService) : fichier --settings
+        // dedie (deny inchange, cwd deja elargi via project.getWorkingDirectory()) au lieu du
+        // settings.json standard - voir ClaudeCliProperties.elevatedSettingsPath et la memoire
+        // projet "god_mode_system_project". timeoutSecondsOverride reste null (comportement
+        // standard, pas de besoin dedie identifie pour l'instant sur ce projet).
+        String settingsPathOverride = project.isElevated() ? claudeCliProperties.getElevatedSettingsPath() : null;
+
         ClaudeCliResult result = claudeCliService.call(
-                prompt, sessionId, Path.of(project.getWorkingDirectory()), BASE_SYSTEM_PROMPT);
+                prompt, sessionId, Path.of(project.getWorkingDirectory()), BASE_SYSTEM_PROMPT,
+                null, settingsPathOverride);
 
         if (sessionId == null) {
             // Premier message de la conversation : le compteur du nouvel objet Conversation

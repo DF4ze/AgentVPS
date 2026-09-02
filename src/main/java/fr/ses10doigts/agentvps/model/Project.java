@@ -38,4 +38,16 @@ public class Project {
      * la remplacer (voir ProjectService.startNewConversation / recordConversationStart).
      */
     private String currentSessionId;
+
+    /**
+     * Projet a droits elargis (voir ProjectService.ELEVATED_PROJECT_SLUG et memoire projet
+     * "god_mode_system_project") : uniquement vrai pour le projet reserve "system", cree
+     * avec un working directory remonte a la racine du workspace (WorkspaceProperties.rootDir())
+     * au lieu du sous-dossier isole habituel, et invoque avec un fichier --settings dedie
+     * (ClaudeCliProperties.elevatedSettingsPath) voir ChatService.sendMessage. false par
+     * defaut (@Data + JsonIgnoreProperties.ignoreUnknown : les projets existants sans ce
+     * champ dans projects-store.json se deserialisent avec elevated=false, aucune migration
+     * necessaire).
+     */
+    private boolean elevated = false;
 }

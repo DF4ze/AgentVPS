@@ -83,6 +83,27 @@ class ClaudeCliServiceTest {
     }
 
     @Test
+    void buildsCommandWithSettingsPathOverrideInsteadOfDefault() {
+        properties.setSettingsPath("/home/agentvps/.config/agentvps/claude-settings.json");
+
+        List<String> command = service.buildCommand("bonjour", null, null,
+                "/home/agentvps/.config/agentvps/claude-settings-system.json");
+
+        assertThat(command).contains(
+                "--settings", "/home/agentvps/.config/agentvps/claude-settings-system.json");
+        assertThat(command).doesNotContain("/home/agentvps/.config/agentvps/claude-settings.json");
+    }
+
+    @Test
+    void buildsCommandWithDefaultSettingsPathWhenOverrideIsBlank() {
+        properties.setSettingsPath("/home/agentvps/.config/agentvps/claude-settings.json");
+
+        List<String> command = service.buildCommand("bonjour", null, null, "   ");
+
+        assertThat(command).contains("--settings", "/home/agentvps/.config/agentvps/claude-settings.json");
+    }
+
+    @Test
     void omitsPermissionModeAndSettingsWhenBlank() {
         properties.setPermissionMode("  ");
         properties.setSettingsPath(null);
@@ -98,6 +119,15 @@ class ClaudeCliServiceTest {
 
         assertThat(defaults.getPermissionMode()).isEqualTo("dontAsk");
         assertThat(defaults.getSettingsPath()).isNotBlank();
+    }
+
+    @Test
+    void defaultPropertiesHaveADistinctElevatedSettingsPath() {
+        ClaudeCliProperties defaults = new ClaudeCliProperties();
+
+        assertThat(defaults.getElevatedSettingsPath())
+                .isNotBlank()
+                .isNotEqualTo(defaults.getSettingsPath());
     }
 
     @Test
