@@ -21,6 +21,7 @@ import fr.ses10doigts.agentvps.service.RecurringTaskManager;
 import fr.ses10doigts.agentvps.service.RecurringTaskService;
 import fr.ses10doigts.telegrambots.model.TelegramMessageReference;
 import fr.ses10doigts.telegrambots.model.TelegramUpdateContext;
+import fr.ses10doigts.telegrambots.service.sender.TelegramMarkdownUtils;
 import fr.ses10doigts.telegrambots.service.sender.TelegramSender;
 import fr.ses10doigts.telegrambots.service.sender.TelegramSenderRegistry;
 import org.junit.jupiter.api.BeforeEach;
@@ -241,7 +242,7 @@ class AgentVpsTelegramControllerTest {
 
         controller.conv(context(10L, "/conv", List.of()));
 
-        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("pas de conversation en cours"));
+        verify(telegramSender).sendFormattedMessage(eq(10L), org.mockito.ArgumentMatchers.contains("pas de conversation en cours"));
     }
 
     @Test
@@ -250,23 +251,32 @@ class AgentVpsTelegramControllerTest {
         // caracteres, puisque describe() tronque a 8 caracteres pour l'affichage.
         String sessionId1 = "11111111-aaaa-bbbb-cccc-111111111111";
         String sessionId2 = "22222222-aaaa-bbbb-cccc-222222222222";
-
-        Project active = project("mon-projet", ProjectStatus.ACTIVE, sessionId2);
-        when(projectService.getActiveProject()).thenReturn(Optional.of(active));
         Instant at = Instant.parse("2026-08-28T16:24:00Z");
-        when(projectService.listConversations("mon-projet")).thenReturn(List.of(
+        List<Conversation> conversations = List.of(
                 new Conversation(sessionId1, at, at, "Mise en place initiale", 0),
                 new Conversation(sessionId2, at, at, null, 0)
-        ));
+        );
+
+        // Meme instance de Project que celle mutee en reel par ProjectService (voir
+        // AgentVpsTelegramController.header()) : on doit donc renseigner ses conversations
+        // en plus du stub de projectService.listConversations, sinon l'en-tete ne
+        // retrouverait pas la conversation courante dans une liste vide.
+        Project active = project("mon-projet", ProjectStatus.ACTIVE, sessionId2);
+        active.setConversations(conversations);
+        when(projectService.getActiveProject()).thenReturn(Optional.of(active));
+        when(projectService.listConversations("mon-projet")).thenReturn(conversations);
 
         controller.conv(context(10L, "/conv list", List.of("list")));
 
-        verify(telegramSender).sendMessage(eq(10L), eq(
-                """
-                        Conversations de 'mon-projet' :
-                          1. Mise en place initiale (11111111..., 2026-08-28T16:24:00Z)
-                        > 2. (sans libelle) (22222222..., 2026-08-28T16:24:00Z)"""
-        ));
+        String rawBody = """
+                Conversations de 'mon-projet' :
+                  1. Mise en place initiale (11111111..., 2026-08-28T16:24:00Z)
+                > 2. (sans libelle) (22222222..., 2026-08-28T16:24:00Z)""";
+        String expected = "📁 *" + TelegramMarkdownUtils.escapeMarkdownV2("mon-projet") + "* · _"
+                + TelegramMarkdownUtils.escapeMarkdownV2("conv #2") + "_\n"
+                + TelegramMarkdownUtils.escapeMarkdownV2(rawBody);
+
+        verify(telegramSender).sendFormattedMessage(eq(10L), eq(expected));
     }
 
     @Test
@@ -276,7 +286,7 @@ class AgentVpsTelegramControllerTest {
         controller.conv(context(10L, "/conv new", List.of("new")));
 
         verify(projectService).startNewConversation("mon-projet");
-        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("Nouvelle conversation prete"));
+        verify(telegramSender).sendFormattedMessage(eq(10L), org.mockito.ArgumentMatchers.contains("Nouvelle conversation prete"));
     }
 
     @Test
@@ -287,7 +297,7 @@ class AgentVpsTelegramControllerTest {
 
         controller.conv(context(10L, "/conv 2", List.of("2")));
 
-        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("Conversation courante"));
+        verify(telegramSender).sendFormattedMessage(eq(10L), org.mockito.ArgumentMatchers.contains("Conversation courante"));
     }
 
     @Test
@@ -296,7 +306,7 @@ class AgentVpsTelegramControllerTest {
 
         controller.conv(context(10L, "/conv abc", List.of("abc")));
 
-        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("numero de conversation"));
+        verify(telegramSender).sendFormattedMessage(eq(10L), org.mockito.ArgumentMatchers.contains("numero de conversation"));
         verify(projectService, never()).switchConversation(any(), org.mockito.ArgumentMatchers.anyInt());
     }
 
@@ -330,7 +340,7 @@ class AgentVpsTelegramControllerTest {
         // d'envoyer le resultat, quel que soit l'etat de la conversation courante.
         Project active = project("mon-projet", ProjectStatus.ACTIVE, "session-1");
         when(projectService.getActiveProject()).thenReturn(Optional.of(active));
-        when(telegramSender.sendMessageAndGetReference(10L, AgentVpsTelegramController.CHAT_PROCESSING_PLACEHOLDER))
+        when(telegramSender.sendFormattedMessageAndGetReference(eq(10L), any()))
                 .thenReturn(TelegramMessageReference.builder().chatId(10L).messageId(42).build());
         ClaudeCliResult result = new ClaudeCliResult();
         result.setResult("Suite...");
@@ -339,7 +349,10 @@ class AgentVpsTelegramControllerTest {
         controller.chat(context(10L, "Continue", List.of()));
 
         verify(chatService).sendMessage(active, "Continue");
-        verify(telegramSender).editMessage(10L, 42, "Suite...");
+        // "Suite..." echappe via TelegramMarkdownUtils dans l'en-tete (voir withHeader) :
+        // les trois points finaux deviennent "\.\.\." dans le texte MarkdownV2 envoye, d'ou
+        // un contains() sur le fragment sans ponctuation plutot qu'une egalite exacte.
+        verify(telegramSender).editFormattedMessage(eq(10L), eq(42), org.mockito.ArgumentMatchers.contains("Suite"));
         verify(telegramSender, never()).sendMessage(eq(10L), any());
     }
 
@@ -350,7 +363,10 @@ class AgentVpsTelegramControllerTest {
         // point 3 du javadoc de la classe.
         Project active = project("mon-projet", ProjectStatus.ACTIVE, "session-1");
         when(projectService.getActiveProject()).thenReturn(Optional.of(active));
-        when(telegramSender.sendMessageAndGetReference(10L, AgentVpsTelegramController.CHAT_PROCESSING_PLACEHOLDER))
+        // "..." final du placeholder est echappe par withHeader ("\.\.\.") : on matche donc
+        // sur le debut de la phrase, sans la ponctuation, plutot que le texte brut complet.
+        when(telegramSender.sendFormattedMessageAndGetReference(eq(10L),
+                org.mockito.ArgumentMatchers.contains("Message recu, je m'en occupe")))
                 .thenReturn(TelegramMessageReference.builder().chatId(10L).messageId(99).build());
         ClaudeCliResult result = new ClaudeCliResult();
         result.setResult("Reponse");
@@ -359,22 +375,48 @@ class AgentVpsTelegramControllerTest {
         controller.chat(context(10L, "Salut", List.of()));
 
         org.mockito.InOrder order = org.mockito.Mockito.inOrder(telegramSender, chatService);
-        order.verify(telegramSender).sendMessageAndGetReference(10L, AgentVpsTelegramController.CHAT_PROCESSING_PLACEHOLDER);
+        order.verify(telegramSender).sendFormattedMessageAndGetReference(eq(10L),
+                org.mockito.ArgumentMatchers.contains("Message recu, je m'en occupe"));
         order.verify(chatService).sendMessage(active, "Salut");
-        order.verify(telegramSender).editMessage(10L, 99, "Reponse");
+        order.verify(telegramSender).editFormattedMessage(eq(10L), eq(99), org.mockito.ArgumentMatchers.contains("Reponse"));
     }
 
     @Test
     void chatReportsClaudeFailureInsteadOfStayingSilent() {
         Project active = project("mon-projet", ProjectStatus.ACTIVE, "session-1");
         when(projectService.getActiveProject()).thenReturn(Optional.of(active));
-        when(telegramSender.sendMessageAndGetReference(eq(10L), any()))
+        when(telegramSender.sendFormattedMessageAndGetReference(eq(10L), any()))
                 .thenReturn(TelegramMessageReference.builder().chatId(10L).messageId(7).build());
         when(chatService.sendMessage(any(), any())).thenThrow(new ClaudeCliException("timeout"));
 
         controller.chat(context(10L, "Salut", List.of()));
 
-        verify(telegramSender).editMessage(10L, 7, "Erreur lors de l'appel a Claude : timeout");
+        verify(telegramSender).editFormattedMessage(eq(10L), eq(7),
+                org.mockito.ArgumentMatchers.contains("Erreur lors de l'appel a Claude : timeout"));
+    }
+
+    @Test
+    void chatRepliesIncludeAMarkdownHeaderWithBoldProjectAndItalicConversation() {
+        // Verifie precisement le format de l'en-tete (demande de Clem du 02/09/2026) :
+        // nom du projet en gras, conversation courante en italique, une seule ligne, sur
+        // un projet/numero de conversation sans caractere reserve MarkdownV2 pour garder
+        // l'assertion lisible (voir TelegramMarkdownUtils.escapeMarkdownV2 pour le reste).
+        Project active = project("agentvps", ProjectStatus.ACTIVE, "session-1");
+        active.setConversations(List.of(new Conversation("session-1", Instant.now(), Instant.now(), null, 0)));
+        when(projectService.getActiveProject()).thenReturn(Optional.of(active));
+        when(telegramSender.sendFormattedMessageAndGetReference(eq(10L), any()))
+                .thenReturn(TelegramMessageReference.builder().chatId(10L).messageId(1).build());
+        ClaudeCliResult result = new ClaudeCliResult();
+        result.setResult("Reponse");
+        when(chatService.sendMessage(active, "Salut")).thenReturn(result);
+
+        controller.chat(context(10L, "Salut", List.of()));
+
+        // "#" est un caractere reserve MarkdownV2 (voir TelegramMarkdownUtils.ESCAPE_CHARS) :
+        // "conv #1" devient "conv \#1" une fois echappe par header().
+        String expectedHeader = "📁 *agentvps* · _conv \\#1_";
+        verify(telegramSender).editFormattedMessage(eq(10L), eq(1),
+                org.mockito.ArgumentMatchers.startsWith(expectedHeader));
     }
 
     @Test
@@ -401,7 +443,7 @@ class AgentVpsTelegramControllerTest {
         controller.chat(context(10L, "Salut", List.of()));
 
         verify(telegramSender).sendTyping(10L);
-        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("Premiere question ?"));
+        verify(telegramSender).sendFormattedMessage(eq(10L), org.mockito.ArgumentMatchers.contains("Premiere question ?"));
     }
 
     @Test

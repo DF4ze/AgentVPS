@@ -15,7 +15,7 @@ public class ClaudeCliProperties {
     private String binaryPath = "/home/agentvps/.local/bin/claude";
 
     /** Delai maximum d'attente d'une reponse, avant destruction forcee du process. */
-    private int timeoutSeconds = 120;
+    private int timeoutSeconds = 240;
 
     /** Si active, un appel de test est effectue au demarrage de l'application (voir ClaudeCliSmokeTestRunner). */
     private boolean smokeTestEnabled = false;

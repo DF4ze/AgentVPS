@@ -24,6 +24,7 @@ import fr.ses10doigts.telegrambots.model.TelegramUpdateContext;
 import fr.ses10doigts.telegrambots.service.poller.handler.annot.Chat;
 import fr.ses10doigts.telegrambots.service.poller.handler.annot.Command;
 import fr.ses10doigts.telegrambots.service.poller.handler.annot.TelegramController;
+import fr.ses10doigts.telegrambots.service.sender.TelegramMarkdownUtils;
 import fr.ses10doigts.telegrambots.service.sender.TelegramSender;
 import fr.ses10doigts.telegrambots.service.sender.TelegramSenderRegistry;
 import lombok.RequiredArgsConstructor;
@@ -137,6 +138,60 @@ public class AgentVpsTelegramController {
         return executor;
     }
 
+    // ------------------------------------------------------------- en-tete
+
+    /**
+     * Icone d'en-tete (voir {@link #header(Project)}) : purement decorative, ne fait
+     * pas partie du Markdown a echapper.
+     */
+    private static final String HEADER_ICON = "📁"; // 📁
+
+    /**
+     * Construit l'en-tete "projet / conversation" (une ligne, gras sur le nom du projet,
+     * italique sur la conversation courante - demande de Clem du 02/09/2026 pour se
+     * reperer immediatement en revenant sur une discussion Telegram). Les deux parties
+     * dynamiques sont echappees via {@link TelegramMarkdownUtils#escapeMarkdownV2}, les
+     * marqueurs *gras_italique_ eux-memes ne le sont pas : cette chaine n'est donc
+     * valide QUE combinee avec {@link TelegramSender#sendFormattedMessage} (jamais avec
+     * sendMarkdownMessage, qui echapperait aussi ces marqueurs et detruirait le formatage).
+     */
+    private String header(Project project) {
+        return HEADER_ICON + " *" + TelegramMarkdownUtils.escapeMarkdownV2(project.getName()) + "* · _"
+                + TelegramMarkdownUtils.escapeMarkdownV2(currentConversationLabel(project)) + "_";
+    }
+
+    /**
+     * Prefixe {@code body} (echappe pour un envoi MarkdownV2 sans risque, quel que soit
+     * son contenu - typiquement la reponse libre de Claude) avec l'en-tete de
+     * {@link #header(Project)}. A envoyer uniquement via sendFormattedMessage/
+     * editFormattedMessage (voir header(Project)).
+     */
+    private String withHeader(Project project, String body) {
+        return header(project) + "\n" + TelegramMarkdownUtils.escapeMarkdownV2(body);
+    }
+
+    /**
+     * Court libelle de la conversation courante du projet pour l'en-tete : le libelle
+     * s'il existe (ex. "Mise en place initiale"), sinon son numero dans l'historique
+     * (coherent avec la numerotation de /conv list, 1 = la plus ancienne), sinon un
+     * texte generique si la conversation n'est pas (encore) retrouvee dans l'historique.
+     */
+    private static String currentConversationLabel(Project project) {
+        String sessionId = project.getCurrentSessionId();
+        if (sessionId == null) {
+            return "nouvelle conversation";
+        }
+        List<Conversation> conversations = project.getConversations();
+        for (int i = 0; i < conversations.size(); i++) {
+            Conversation c = conversations.get(i);
+            if (sessionId.equals(c.getSessionId())) {
+                String label = c.getLabel();
+                return (label != null && !label.isBlank()) ? label : "conv #" + (i + 1);
+            }
+        }
+        return "conversation en cours";
+    }
+
     // ---------------------------------------------------------------- /projet
 
     @Command(value = "/projet", description = "Gerer les projets (list, new <nom>, delete, <nom>)")
@@ -163,13 +218,26 @@ public class AgentVpsTelegramController {
         }
     }
 
+    /**
+     * Affiche le projet actif et, s'il a deja au moins une conversation, leur liste
+     * complete avec un tag sur la courante (demande de Clem du 02/09/2026 : vue "ou j'en
+     * suis" complete en une seule commande, sans avoir a enchainer avec /conv list).
+     */
     private void showActiveProject(Long chatId) {
-        Optional<Project> active = projectService.getActiveProject();
-        if (active.isEmpty()) {
+        Optional<Project> activeOpt = projectService.getActiveProject();
+        if (activeOpt.isEmpty()) {
             sender().sendMessage(chatId, noActiveProjectHint());
             return;
         }
-        sender().sendMessage(chatId, "Projet actif : " + active.get().getName());
+
+        Project active = activeOpt.get();
+        List<Conversation> conversations = projectService.listConversations(active.getName());
+        StringBuilder sb = new StringBuilder("Projet actif : " + active.getName());
+        if (!conversations.isEmpty()) {
+            sb.append("\n\nConversations :\n");
+            appendConversationList(sb, conversations, active.getCurrentSessionId());
+        }
+        sender().sendMessage(chatId, sb.toString().trim());
     }
 
     private void listProjects(Long chatId) {
@@ -286,23 +354,31 @@ public class AgentVpsTelegramController {
 
     private void showCurrentConversation(Long chatId, Project active) {
         Optional<Conversation> current = projectService.getCurrentConversation(active.getName());
-        if (current.isEmpty()) {
-            sender().sendMessage(chatId,
-                    "Projet '" + active.getName() + "' : pas de conversation en cours (le prochain message en demarrera une nouvelle).");
-            return;
-        }
-        sender().sendMessage(chatId, "Conversation en cours : " + describe(current.get()));
+        String body = current.isEmpty()
+                ? "Projet '" + active.getName() + "' : pas de conversation en cours (le prochain message en demarrera une nouvelle)."
+                : "Conversation en cours : " + describe(current.get());
+        sender().sendFormattedMessage(chatId, withHeader(active, body));
     }
 
     private void listConversations(Long chatId, Project active) {
         List<Conversation> conversations = projectService.listConversations(active.getName());
         if (conversations.isEmpty()) {
-            sender().sendMessage(chatId, "Aucune conversation pour l'instant. Ecris un message pour en demarrer une.");
+            sender().sendFormattedMessage(chatId,
+                    withHeader(active, "Aucune conversation pour l'instant. Ecris un message pour en demarrer une."));
             return;
         }
 
-        String currentSessionId = active.getCurrentSessionId();
         StringBuilder sb = new StringBuilder("Conversations de '" + active.getName() + "' :\n");
+        appendConversationList(sb, conversations, active.getCurrentSessionId());
+        sender().sendFormattedMessage(chatId, withHeader(active, sb.toString().trim()));
+    }
+
+    /**
+     * Rend la liste numerotee de conversations (utilisee par /conv list et par /projet
+     * seul, voir showActiveProject) : "&gt; " + numero sur la conversation courante,
+     * "  " + numero sinon, 1 = la plus ancienne (coherent avec /conv &lt;numero&gt;).
+     */
+    private void appendConversationList(StringBuilder sb, List<Conversation> conversations, String currentSessionId) {
         for (int i = 0; i < conversations.size(); i++) {
             Conversation c = conversations.get(i);
             boolean isCurrent = c.getSessionId().equals(currentSessionId);
@@ -311,13 +387,12 @@ public class AgentVpsTelegramController {
                     .append(describe(c))
                     .append('\n');
         }
-        sender().sendMessage(chatId, sb.toString().trim());
     }
 
     private void startNewConversation(Long chatId, Project active) {
         projectService.startNewConversation(active.getName());
-        sender().sendMessage(chatId,
-                "Nouvelle conversation prete pour '" + active.getName() + "' : le prochain message en demarrera une nouvelle.");
+        sender().sendFormattedMessage(chatId, withHeader(active,
+                "Nouvelle conversation prete pour '" + active.getName() + "' : le prochain message en demarrera une nouvelle."));
     }
 
     private void switchConversation(Long chatId, Project active, String rawNumber) {
@@ -325,14 +400,15 @@ public class AgentVpsTelegramController {
         try {
             number = Integer.parseInt(rawNumber.trim());
         } catch (NumberFormatException e) {
-            sender().sendMessage(chatId, "Argument invalide : attendu un numero de conversation (voir /conv list).");
+            sender().sendFormattedMessage(chatId,
+                    withHeader(active, "Argument invalide : attendu un numero de conversation (voir /conv list)."));
             return;
         }
         try {
             Conversation conversation = projectService.switchConversation(active.getName(), number);
-            sender().sendMessage(chatId, "Conversation courante : " + describe(conversation));
+            sender().sendFormattedMessage(chatId, withHeader(active, "Conversation courante : " + describe(conversation)));
         } catch (ProjectException e) {
-            sender().sendMessage(chatId, e.getMessage());
+            sender().sendFormattedMessage(chatId, withHeader(active, e.getMessage()));
         }
     }
 
@@ -563,14 +639,16 @@ public class AgentVpsTelegramController {
             MDC.put("project", active.getName());
 
             sender().sendTyping(chatId);
-            TelegramMessageReference placeholder = sender().sendMessageAndGetReference(chatId, CHAT_PROCESSING_PLACEHOLDER);
+            TelegramMessageReference placeholder = sender().sendFormattedMessageAndGetReference(
+                    chatId, withHeader(active, CHAT_PROCESSING_PLACEHOLDER));
             ScheduledExecutorService typingHeartbeat = startTypingHeartbeat(chatId);
             try {
                 ClaudeCliResult result = chatService.sendMessage(active, text);
-                sender().editMessage(chatId, placeholder.getMessageId(), result.getResult());
+                sender().editFormattedMessage(chatId, placeholder.getMessageId(), withHeader(active, result.getResult()));
             } catch (ClaudeCliException e) {
                 log.error("Echec de l'appel claude pour le projet '{}'", active.getName(), e);
-                sender().editMessage(chatId, placeholder.getMessageId(), "Erreur lors de l'appel a Claude : " + e.getMessage());
+                sender().editFormattedMessage(chatId, placeholder.getMessageId(),
+                        withHeader(active, "Erreur lors de l'appel a Claude : " + e.getMessage()));
             } finally {
                 typingHeartbeat.shutdownNow();
             }
@@ -599,9 +677,10 @@ public class AgentVpsTelegramController {
             try {
                 ProjectOnboardingService.OnboardingResult result =
                         onboardingService.createProjectAndStartOnboarding(DEFAULT_PROJECT_NAME);
-                sender().sendMessage(chatId,
-                        "Aucun projet n'existait encore : projet '" + result.project().getName() + "' cree automatiquement.\n\n"
-                                + result.firstClaudeMessage());
+                Project created = result.project();
+                sender().sendFormattedMessage(chatId, withHeader(created,
+                        "Aucun projet n'existait encore : projet '" + created.getName() + "' cree automatiquement.\n\n"
+                                + result.firstClaudeMessage()));
             } catch (ProjectException | ClaudeCliException e) {
                 log.error("Echec de la creation automatique du projet par defaut", e);
                 sender().sendMessage(chatId, "Erreur lors de la creation automatique du projet : " + e.getMessage());
