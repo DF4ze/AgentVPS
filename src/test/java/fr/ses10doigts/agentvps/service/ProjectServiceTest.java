@@ -171,6 +171,90 @@ class ProjectServiceTest {
                 .isInstanceOf(ProjectException.class);
     }
 
+    // -------------------------------------------------- Threads = projets (02/09/2026)
+
+    @Test
+    void findProjectByNameReturnsEmptyForAnUnknownProject() {
+        assertThat(service.findProjectByName("inconnu")).isEmpty();
+    }
+
+    @Test
+    void findProjectByNameReturnsTheProjectWhenItExists() {
+        Project created = service.createProject("projet-a");
+
+        assertThat(service.findProjectByName("projet-a")).contains(created);
+    }
+
+    @Test
+    void findProjectByThreadIdReturnsEmptyWhenNoProjectHasThatThread() {
+        service.createProject("projet-a");
+
+        assertThat(service.findProjectByThreadId(42)).isEmpty();
+        assertThat(service.findProjectByThreadId(null)).isEmpty();
+    }
+
+    @Test
+    void setThreadIdMakesTheProjectFindableByItsThreadId() {
+        Project project = service.createProject("projet-a");
+
+        service.setThreadId("projet-a", 42);
+
+        assertThat(service.getProject("projet-a").getTelegramThreadId()).isEqualTo(42);
+        assertThat(service.findProjectByThreadId(42)).contains(project);
+    }
+
+    @Test
+    void deleteProjectPermanentlyRemovesTheProjectAndItsWorkingDirectory() {
+        Project project = service.createProject("projet-a");
+        Path workingDirectory = Path.of(project.getWorkingDirectory());
+        assertThat(Files.isDirectory(workingDirectory)).isTrue();
+
+        service.deleteProjectPermanently("projet-a");
+
+        assertThat(service.findProjectByName("projet-a")).isEmpty();
+        assertThat(Files.exists(workingDirectory)).isFalse();
+        assertThatThrownBy(() -> service.getProject("projet-a")).isInstanceOf(ProjectException.class);
+    }
+
+    @Test
+    void deleteProjectPermanentlyClearsTheActiveProjectWhenItWasActive() {
+        service.createProject("projet-a");
+
+        service.deleteProjectPermanently("projet-a");
+
+        assertThat(service.getActiveProject()).isEmpty();
+    }
+
+    @Test
+    void deleteProjectPermanentlyKeepsAnotherActiveProjectUnchanged() {
+        service.createProject("projet-a");
+        service.createProject("projet-b");
+        service.switchProject("projet-a");
+
+        service.deleteProjectPermanently("projet-b");
+
+        assertThat(service.getActiveProject()).map(Project::getName).contains("projet-a");
+    }
+
+    @Test
+    void deleteProjectPermanentlyRejectsTheElevatedSystemProject() {
+        service.createProject("system");
+
+        assertThatThrownBy(() -> service.deleteProjectPermanently("system"))
+                .isInstanceOf(ProjectException.class);
+        assertThat(service.findProjectByName("system")).isPresent();
+    }
+
+    @Test
+    void deleteProjectPermanentlyRemovesAllConversationHistory() {
+        service.createProject("projet-a");
+        service.recordConversationStart("projet-a", "session-1", null);
+
+        service.deleteProjectPermanently("projet-a");
+
+        assertThat(service.findProjectByName("projet-a")).isEmpty();
+    }
+
     // ------------------------------------------------------- renforcement periodique
 
     @Test

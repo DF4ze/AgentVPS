@@ -50,4 +50,16 @@ public class Project {
      * necessaire).
      */
     private boolean elevated = false;
+
+    /**
+     * Identifiant du sujet (topic) de forum Telegram associe a ce projet (feature
+     * "Threads = projets" du 02/09/2026, voir AgentVpsTelegramProperties.forumChatId et
+     * ProjectThreadService) : chaque message poste dans ce Thread, dans le groupe
+     * configure, resout automatiquement ce projet (ProjectService.findProjectByThreadId),
+     * sans passer par la notion de "projet actif" global. Null si le Thread n'a jamais
+     * ete cree (Threads non configures au moment de la creation du projet, ou echec de
+     * creation cote Telegram - voir ProjectThreadService.createTopicForProject) : dans ce
+     * cas, /projets init permet de le creer ulterieurement.
+     */
+    private Integer telegramThreadId;
 }

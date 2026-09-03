@@ -15,12 +15,16 @@ import fr.ses10doigts.agentvps.service.ClaudeCliException;
 import fr.ses10doigts.agentvps.service.ProjectException;
 import fr.ses10doigts.agentvps.service.ProjectOnboardingService;
 import fr.ses10doigts.agentvps.service.ProjectService;
+import fr.ses10doigts.agentvps.service.ProjectThreadService;
 import fr.ses10doigts.agentvps.service.RecurringTaskCreationWizard;
 import fr.ses10doigts.agentvps.service.RecurringTaskException;
 import fr.ses10doigts.agentvps.service.RecurringTaskManager;
 import fr.ses10doigts.agentvps.service.RecurringTaskService;
+import fr.ses10doigts.telegrambots.model.TelegramButtonView;
 import fr.ses10doigts.telegrambots.model.TelegramMessageReference;
 import fr.ses10doigts.telegrambots.model.TelegramUpdateContext;
+import fr.ses10doigts.telegrambots.model.TelegramView;
+import fr.ses10doigts.telegrambots.service.poller.handler.annot.CallbackQuery;
 import fr.ses10doigts.telegrambots.service.poller.handler.annot.Chat;
 import fr.ses10doigts.telegrambots.service.poller.handler.annot.Command;
 import fr.ses10doigts.telegrambots.service.poller.handler.annot.TelegramController;
@@ -37,7 +41,9 @@ import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -111,8 +117,22 @@ public class AgentVpsTelegramController {
     private final RecurringTaskService recurringTaskService;
     private final RecurringTaskManager recurringTaskManager;
     private final RecurringTaskCreationWizard recurringTaskWizard;
+    private final ProjectThreadService projectThreadService;
     private final ObjectProvider<TelegramSender> telegramSenderProvider;
     private final ObjectProvider<TelegramSenderRegistry> telegramSenderRegistryProvider;
+
+    /**
+     * Suppressions de projet en attente de confirmation (feature Threads = projets du
+     * 02/09/2026, voir requestProjectDeletion/confirmProjectDeletion/cancelProjectDeletion) :
+     * cle = chatId + messageThreadId (voir pendingDeletionKey), valeur = nom (slug) du
+     * projet vise. @CallbackQuery ne route que sur une valeur EXACTE de callbackData (pas
+     * de pattern/wildcard, voir TelegramHandlerRegistry) : impossible d'y encoder le nom du
+     * projet directement, d'ou cet etat cote serveur, meme pattern que
+     * RecurringTaskCreationWizard pour /tache new. ConcurrentHashMap : les updates Telegram
+     * peuvent etre traites sur des threads differents (long-polling, voir
+     * TelegramUpdateDispatcher).
+     */
+    private final Map<String, String> pendingProjectDeletions = new ConcurrentHashMap<>();
 
     private TelegramSender sender() {
         return telegramSenderProvider.getObject();
@@ -122,7 +142,7 @@ public class AgentVpsTelegramController {
      * Demarre le heartbeat "typing..." (voir point 4 du javadoc de la classe) : a annuler dans
      * tous les cas (finally) une fois l'appel claude termine, succes ou echec.
      */
-    private ScheduledExecutorService startTypingHeartbeat(Long chatId) {
+    private ScheduledExecutorService startTypingHeartbeat(Long chatId, Integer messageThreadId) {
         ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "chat-typing-heartbeat");
             thread.setDaemon(true);
@@ -130,7 +150,7 @@ public class AgentVpsTelegramController {
         });
         executor.scheduleAtFixedRate(() -> {
             try {
-                telegramSenderRegistryProvider.getObject().getDefaultBotSender().sendTyping(chatId);
+                telegramSenderRegistryProvider.getObject().getDefaultBotSender().sendTyping(chatId, messageThreadId);
             } catch (Exception e) {
                 log.warn("Echec du heartbeat 'typing...' pour chatId={}", chatId, e);
             }
@@ -194,28 +214,59 @@ public class AgentVpsTelegramController {
 
     // ---------------------------------------------------------------- /projet
 
-    @Command(value = "/projet", description = "Gerer les projets (list, new <nom>, delete, <nom>)")
+    @Command(value = "/projet",
+            description = "Gerer les projets (list, new <nom>, delete, <nom> - reduit a new/delete si les Threads sont actifs)")
     public void projet(TelegramUpdateContext context) {
         Long chatId = context.getChatId();
         MDC.put("chatId", String.valueOf(chatId));
         try {
+            boolean threadsActive = projectThreadService.isForumChat(chatId);
             List<String> args = context.getArgs();
 
             if (args.isEmpty()) {
+                if (threadsActive) {
+                    sender().sendMessage(chatId, projetDisabledInForumMessage());
+                    return;
+                }
                 showActiveProject(chatId);
                 return;
             }
 
             String sub = args.getFirst().toLowerCase(Locale.ROOT);
             switch (sub) {
-                case "list" -> listProjects(chatId);
                 case "new" -> createProject(chatId, joinFrom(args, 1));
-                case "delete" -> deleteProject(chatId, joinFrom(args, 1));
-                default -> switchProject(chatId, context.getCommandArgsRaw());
+                case "delete" -> requestProjectDeletion(context, joinFrom(args, 1));
+                case "list" -> {
+                    if (threadsActive) {
+                        sender().sendMessage(chatId, projetDisabledInForumMessage());
+                    } else {
+                        listProjects(chatId);
+                    }
+                }
+                default -> {
+                    if (threadsActive) {
+                        sender().sendMessage(chatId, projetDisabledInForumMessage());
+                    } else {
+                        switchProject(chatId, context.getCommandArgsRaw());
+                    }
+                }
             }
         } finally {
             MDC.remove("chatId");
         }
+    }
+
+    /**
+     * Message renvoye pour toute sous-commande /projet autre que new/delete quand les
+     * Threads sont actifs (voir projet() ci-dessus) : list/&lt;nom&gt; n'ont plus de sens
+     * des que chaque projet a son propre Thread (routage automatique par
+     * messageThreadId, voir resolveContextProject) - demande explicite de Clem du
+     * 02/09/2026.
+     */
+    private static String projetDisabledInForumMessage() {
+        return "Cette sous-commande est desactivee dans ce groupe : chaque projet a son propre Thread. "
+                + "Ecris directement dans le Thread du projet concerne, ou utilise /projet new <nom> "
+                + "/ /projet delete pour creer ou supprimer un projet.";
     }
 
     /**
@@ -226,7 +277,7 @@ public class AgentVpsTelegramController {
     private void showActiveProject(Long chatId) {
         Optional<Project> activeOpt = projectService.getActiveProject();
         if (activeOpt.isEmpty()) {
-            sender().sendMessage(chatId, noActiveProjectHint());
+            sender().sendMessage(chatId, noActiveProjectHint(chatId));
             return;
         }
 
@@ -273,8 +324,10 @@ public class AgentVpsTelegramController {
             sender().sendTyping(chatId);
             try {
                 ProjectOnboardingService.OnboardingResult result = onboardingService.createProjectAndStartOnboarding(rawName);
+                Project created = result.project();
                 sender().sendMessage(chatId,
-                        "Projet '" + result.project().getName() + "' cree.\n\n" + result.firstClaudeMessage());
+                        "Projet '" + created.getName() + "' cree." + attachForumTopicNote(created)
+                                + "\n\n" + result.firstClaudeMessage());
             } catch (ProjectException e) {
                 sender().sendMessage(chatId, "Impossible de creer le projet : " + e.getMessage());
             } catch (ClaudeCliException e) {
@@ -288,22 +341,109 @@ public class AgentVpsTelegramController {
         }
     }
 
-    private void deleteProject(Long chatId, String rawName) {
-        String targetName = (rawName == null || rawName.isBlank())
-                ? projectService.getActiveProject().map(Project::getName).orElse(null)
-                : rawName;
+    /**
+     * Cree le Thread Telegram du projet si les Threads sont configures (voir
+     * ProjectThreadService), quel que soit le chat depuis lequel /projet new a ete
+     * invoque (DM ou groupe) - demande de Clem : "A chaque creation de projet, sera
+     * automatiquement cree un Thread". Chaine vide si les Threads ne sont pas
+     * configures (comportement legacy inchange) ; message explicite en cas d'echec cote
+     * Telegram (droits manquants, groupe pas configure en forum...) plutot que de le
+     * passer sous silence.
+     */
+    private String attachForumTopicNote(Project project) {
+        if (!projectThreadService.isEnabled()) {
+            return "";
+        }
+        return projectThreadService.createTopicForProject(project).isPresent()
+                ? "\nThread Telegram cree pour ce projet."
+                : "\n(Impossible de creer le Thread Telegram pour ce projet - voir les logs.)";
+    }
 
+    /**
+     * Etape 1 de la suppression d'un projet (feature Threads = projets du 02/09/2026,
+     * decision Clem) : /projet delete ne supprime plus rien directement, il demande
+     * confirmation via un clavier inline (voir confirmProjectDeletion/
+     * cancelProjectDeletion ci-dessous) - suppression reelle et irreversible (fichiers,
+     * historique de conversations, Thread Telegram), contrairement au comportement
+     * precedent (archiveProject, reversible - conserve dans ProjectService mais plus
+     * appele depuis ce controller). Sans nom explicite, cible le projet du Thread
+     * courant (voir resolveContextProject) si on est dans un Thread, sinon le projet
+     * actif global.
+     */
+    private void requestProjectDeletion(TelegramUpdateContext context, String rawName) {
+        Long chatId = context.getChatId();
+        Project target;
+        try {
+            target = (rawName == null || rawName.isBlank())
+                    ? resolveContextProject(context).orElse(null)
+                    : projectService.getProject(rawName);
+        } catch (ProjectException e) {
+            sender().sendMessage(chatId, "Projet introuvable : " + e.getMessage());
+            return;
+        }
+
+        if (target == null) {
+            sender().sendMessage(chatId, "Aucun projet a supprimer. Precise un nom : /projet delete <nom>.");
+            return;
+        }
+
+        pendingProjectDeletions.put(pendingDeletionKey(context), target.getName());
+
+        String threadWarning = target.getTelegramThreadId() != null ? " et son Thread Telegram" : "";
+        TelegramView confirmation = TelegramView.builder()
+                .text("Supprimer le projet '" + target.getName() + "' ? Action IRREVERSIBLE : tout son "
+                        + "historique de conversations, les fichiers du projet" + threadWarning
+                        + " seront definitivement supprimes.")
+                .buttons(List.of(List.of(
+                        new TelegramButtonView("Oui, supprimer", "projet:delete:confirm"),
+                        new TelegramButtonView("Annuler", "projet:delete:cancel")
+                )))
+                .build();
+        sender().sendView(chatId, confirmation);
+    }
+
+    /**
+     * Etape 2 (confirmation positive) de requestProjectDeletion ci-dessus : supprime
+     * reellement le projet (ProjectService.deleteProjectPermanently) puis son Thread
+     * Telegram s'il en avait un (ProjectThreadService.deleteTopic, best-effort).
+     */
+    @CallbackQuery("projet:delete:confirm")
+    public void confirmProjectDeletion(TelegramUpdateContext context) {
+        Long chatId = context.getChatId();
+        String targetName = pendingProjectDeletions.remove(pendingDeletionKey(context));
         if (targetName == null) {
-            sender().sendMessage(chatId, "Aucun projet actif a supprimer. Precise un nom : /projet delete <nom>.");
+            sender().sendMessage(chatId, "Rien a confirmer (la demande a peut-etre expire). Relance /projet delete.");
             return;
         }
 
         try {
-            projectService.archiveProject(targetName);
-            sender().sendMessage(chatId, "Projet '" + targetName + "' archive (reversible via /projet " + targetName + ").");
+            Integer threadId = projectService.getProject(targetName).getTelegramThreadId();
+            projectService.deleteProjectPermanently(targetName);
+            projectThreadService.deleteTopic(threadId);
+
+            // Le Thread courant vient potentiellement d'etre supprime a l'instant : la
+            // reponse finale part explicitement hors Thread (sujet "General"), sender()
+            // etant sinon lie au Thread du message d'origine (CurrentTelegramThreadContext,
+            // voir TelegramUpdateDispatcher) - un envoi cible sur ce Thread echouerait.
+            sender().sendMessage(chatId, (Integer) null,
+                    "Projet '" + targetName + "' supprime definitivement."
+                            + (threadId != null ? " Thread Telegram supprime." : ""));
         } catch (ProjectException e) {
-            sender().sendMessage(chatId, "Impossible d'archiver ce projet : " + e.getMessage());
+            sender().sendMessage(chatId, "Impossible de supprimer ce projet : " + e.getMessage());
         }
+    }
+
+    /** Etape 2 (annulation) de requestProjectDeletion ci-dessus. */
+    @CallbackQuery("projet:delete:cancel")
+    public void cancelProjectDeletion(TelegramUpdateContext context) {
+        pendingProjectDeletions.remove(pendingDeletionKey(context));
+        sender().sendMessage(context.getChatId(), "Suppression annulee.");
+    }
+
+    /** Cle de pendingProjectDeletions : voir le javadoc du champ pour le detail. */
+    private static String pendingDeletionKey(TelegramUpdateContext context) {
+        Integer threadId = context.getMessageThreadId();
+        return context.getChatId() + ":" + (threadId != null ? threadId : "general");
     }
 
     private void switchProject(Long chatId, String rawName) {
@@ -319,6 +459,93 @@ public class AgentVpsTelegramController {
         }
     }
 
+    // ---------------------------------------------------------------- /projets init
+
+    @Command(value = "/projets",
+            description = "Creer les Threads Telegram manquants pour les projets existants (init)")
+    public void projets(TelegramUpdateContext context) {
+        Long chatId = context.getChatId();
+        MDC.put("chatId", String.valueOf(chatId));
+        try {
+            List<String> args = context.getArgs();
+            if (args.size() != 1 || !"init".equalsIgnoreCase(args.getFirst())) {
+                sender().sendMessage(chatId, "Usage : /projets init");
+                return;
+            }
+            initProjectThreads(chatId);
+        } finally {
+            MDC.remove("chatId");
+        }
+    }
+
+    /**
+     * /projets init (feature Threads = projets du 02/09/2026, demande explicite de
+     * Clem) : cree le Thread Telegram manquant de chaque projet existant. Pour un
+     * projet qui a deja un messageThreadId enregistre, verifie d'abord qu'il existe
+     * toujours reellement cote Telegram (ProjectThreadService.topicStillExists) avant
+     * de le considerer comme "deja fait" - un sujet peut avoir ete supprime
+     * manuellement cote Telegram sans que AgentVPS ne le sache, auquel cas il est
+     * recree.
+     */
+    private void initProjectThreads(Long chatId) {
+        if (!projectThreadService.isEnabled()) {
+            sender().sendMessage(chatId,
+                    "Threads non configures (agentvps.telegram.forum-chat-id manquant) : rien a faire.");
+            return;
+        }
+
+        sender().sendTyping(chatId);
+        int created = 0;
+        int recreated = 0;
+        int kept = 0;
+        int failed = 0;
+
+        for (Project project : projectService.listProjects()) {
+            Integer existingThreadId = project.getTelegramThreadId();
+            if (existingThreadId != null && projectThreadService.topicStillExists(existingThreadId)) {
+                kept++;
+                continue;
+            }
+
+            boolean wasRecreate = existingThreadId != null;
+            if (projectThreadService.createTopicForProject(project).isPresent()) {
+                if (wasRecreate) {
+                    recreated++;
+                } else {
+                    created++;
+                }
+            } else {
+                failed++;
+            }
+        }
+
+        StringBuilder sb = new StringBuilder("Initialisation des Threads terminee.\n");
+        sb.append("Crees : ").append(created).append('\n');
+        sb.append("Recrees (Thread manquant cote Telegram) : ").append(recreated).append('\n');
+        sb.append("Deja en place : ").append(kept).append('\n');
+        if (failed > 0) {
+            sb.append("Echecs : ").append(failed).append(" (voir les logs)\n");
+        }
+        sender().sendMessage(chatId, sb.toString().trim());
+    }
+
+    /**
+     * Resout le projet concerne par ce message (feature Threads = projets du
+     * 02/09/2026) : dans le groupe configure (voir ProjectThreadService.isForumChat),
+     * le Thread dans lequel le message a ete recu determine directement le projet
+     * (ProjectService.findProjectByThreadId, y compris vide si le message vient du
+     * sujet "General", sans Thread), independamment de toute notion de "projet actif" ;
+     * partout ailleurs (DM, autre groupe...), comportement legacy inchange : le projet
+     * actif global (ProjectService.getActiveProject()). Utilise par /conv, @Chat et
+     * /projet delete sans nom explicite.
+     */
+    private Optional<Project> resolveContextProject(TelegramUpdateContext context) {
+        if (projectThreadService.isForumChat(context.getChatId())) {
+            return projectService.findProjectByThreadId(context.getMessageThreadId());
+        }
+        return projectService.getActiveProject();
+    }
+
     // ------------------------------------------------------------------ /conv
 
     @Command(value = "/conv", description = "Gerer les conversations du projet actif (list, new, <numero>)")
@@ -326,9 +553,9 @@ public class AgentVpsTelegramController {
         Long chatId = context.getChatId();
         MDC.put("chatId", String.valueOf(chatId));
         try {
-            Optional<Project> activeOpt = projectService.getActiveProject();
+            Optional<Project> activeOpt = resolveContextProject(context);
             if (activeOpt.isEmpty()) {
-                sender().sendMessage(chatId, noActiveProjectHint());
+                sender().sendMessage(chatId, noActiveProjectHint(chatId));
                 return;
             }
             Project active = activeOpt.get();
@@ -629,9 +856,9 @@ public class AgentVpsTelegramController {
                 return;
             }
 
-            Optional<Project> activeOpt = projectService.getActiveProject();
+            Optional<Project> activeOpt = resolveContextProject(context);
             if (activeOpt.isEmpty()) {
-                handleChatWithoutActiveProject(chatId);
+                handleChatWithoutActiveProject(context);
                 return;
             }
 
@@ -641,7 +868,7 @@ public class AgentVpsTelegramController {
             sender().sendTyping(chatId);
             TelegramMessageReference placeholder = sender().sendFormattedMessageAndGetReference(
                     chatId, withHeader(active, CHAT_PROCESSING_PLACEHOLDER));
-            ScheduledExecutorService typingHeartbeat = startTypingHeartbeat(chatId);
+            ScheduledExecutorService typingHeartbeat = startTypingHeartbeat(chatId, context.getMessageThreadId());
             try {
                 ClaudeCliResult result = chatService.sendMessage(active, text);
                 sender().editFormattedMessage(chatId, placeholder.getMessageId(), withHeader(active, result.getResult()));
@@ -665,9 +892,10 @@ public class AgentVpsTelegramController {
      * est cree automatiquement (avec interview CLAUDE.md) pour ne pas bloquer un tout
      * premier usage avant meme un /projet new explicite.
      */
-    private void handleChatWithoutActiveProject(Long chatId) {
+    private void handleChatWithoutActiveProject(TelegramUpdateContext context) {
+        Long chatId = context.getChatId();
         if (!projectService.listProjects().isEmpty()) {
-            sender().sendMessage(chatId, noActiveProjectHint());
+            sender().sendMessage(chatId, noActiveProjectHint(chatId));
             return;
         }
 
@@ -679,8 +907,8 @@ public class AgentVpsTelegramController {
                         onboardingService.createProjectAndStartOnboarding(DEFAULT_PROJECT_NAME);
                 Project created = result.project();
                 sender().sendFormattedMessage(chatId, withHeader(created,
-                        "Aucun projet n'existait encore : projet '" + created.getName() + "' cree automatiquement.\n\n"
-                                + result.firstClaudeMessage()));
+                        "Aucun projet n'existait encore : projet '" + created.getName() + "' cree automatiquement."
+                                + attachForumTopicNote(created) + "\n\n" + result.firstClaudeMessage()));
             } catch (ProjectException | ClaudeCliException e) {
                 log.error("Echec de la creation automatique du projet par defaut", e);
                 sender().sendMessage(chatId, "Erreur lors de la creation automatique du projet : " + e.getMessage());
@@ -690,7 +918,17 @@ public class AgentVpsTelegramController {
         }
     }
 
-    private static String noActiveProjectHint() {
+    /**
+     * Message affiche quand aucun projet ne peut etre resolu pour ce contexte (voir
+     * resolveContextProject) : distingue le cas "dans le groupe Threads, hors de tout
+     * Thread projet" (sujet "General", ou Thread non mappe) du cas legacy (DM, autre
+     * groupe...), ou la notion de "projet actif" global garde son sens.
+     */
+    private String noActiveProjectHint(Long chatId) {
+        if (projectThreadService.isForumChat(chatId)) {
+            return "Aucun projet associe a ce Thread. Ecris dans le Thread d'un projet existant, "
+                    + "ou utilise /projet new <nom> pour en creer un nouveau (un Thread sera cree automatiquement).";
+        }
         return "Aucun projet actif. Utilise /projet list pour voir les projets existants, "
                 + "ou /projet <nom> pour en choisir un (ou /projet new <nom> pour en creer un).";
     }

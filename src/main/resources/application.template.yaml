@@ -77,6 +77,12 @@ agentvps:
     # PAS via --append-system-prompt) - voir ClaudeCliProperties.reinforcementEveryMessages.
     # Le premier message d'une conversation est toujours renforce, independamment de ce seuil.
     reinforcement-every-messages: ${AGENTVPS_CLAUDE_REINFORCEMENT_EVERY_MESSAGES:10}
+  telegram:
+    # Feature "Threads = projets" (02/09/2026, demande de Clem, voir ProjectThreadService) :
+    # ID du supergroupe Telegram ("Sujets" actives, bot admin avec les droits "Gerer les
+    # sujets" + "Supprimer les messages") ou vivent les Threads projet. Vide/blank =
+    # Threads desactives (comportement legacy : /projet garde tout son mecanisme partout).
+    forum-chat-id: ${AGENTVPS_TELEGRAM_FORUM_CHAT_ID:}
   recurring-tasks:
     # Roadmap Phase 7 (taches recurrentes) : execution planifiee de scripts dans le
     # repertoire de travail d'un projet (voir RecurringTaskScheduler). Delai maximum

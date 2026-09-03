@@ -2,6 +2,7 @@ package fr.ses10doigts.agentvps.service;
 
 import fr.ses10doigts.agentvps.config.RecurringTaskProperties;
 import fr.ses10doigts.agentvps.model.NotificationPolicy;
+import fr.ses10doigts.agentvps.model.Project;
 import fr.ses10doigts.agentvps.model.RecurringTask;
 import fr.ses10doigts.agentvps.model.RecurringTaskRunOutcome;
 import fr.ses10doigts.agentvps.model.RunStatus;
@@ -27,6 +28,12 @@ import static org.mockito.Mockito.when;
  * TelegramSenderRegistry.getDefaultBotSender() plutot que par le bean TelegramSender
  * (ContextAwareTelegramSender) injecte ailleurs dans le code - le bean TelegramSender lui-
  * meme n'est donc plus mocke ici, seul son "sender par defaut" obtenu via le registry l'est.
+ *
+ * Depuis le 02/09/2026 (feature Threads = projets, voir ProjectThreadService), le notifier
+ * route en priorite vers le Thread Telegram du projet concerne (projectThreadService.forumChatId()
+ * non null) - projectThreadService/projectService renvoient null/vide par defaut (mock non
+ * stubbe) dans tous les tests existants ci-dessous, qui continuent donc de couvrir le seul
+ * fallback notification-chat-id, sans le savoir.
  */
 @ExtendWith(MockitoExtension.class)
 class RecurringTaskNotifierTest {
@@ -40,6 +47,12 @@ class RecurringTaskNotifierTest {
     @Mock
     private TelegramSender telegramSender;
 
+    @Mock
+    private ProjectService projectService;
+
+    @Mock
+    private ProjectThreadService projectThreadService;
+
     private RecurringTaskProperties properties;
     private RecurringTaskNotifier notifier;
 
@@ -47,7 +60,7 @@ class RecurringTaskNotifierTest {
     void setUp() {
         properties = new RecurringTaskProperties();
         properties.setNotificationChatId("1595302518");
-        notifier = new RecurringTaskNotifier(telegramSenderRegistryProvider, properties);
+        notifier = new RecurringTaskNotifier(telegramSenderRegistryProvider, properties, projectService, projectThreadService);
         lenient().when(telegramSenderRegistryProvider.getIfAvailable()).thenReturn(telegramSenderRegistry);
         lenient().when(telegramSenderRegistry.getDefaultBotSender()).thenReturn(telegramSender);
     }
@@ -96,6 +109,34 @@ class RecurringTaskNotifierTest {
         notifier.notify(task(NotificationPolicy.ALWAYS), new RecurringTaskRunOutcome(RunStatus.OK, 0, "ok", null));
 
         verify(telegramSender, never()).sendMessage(anyLong(), anyString());
+    }
+
+    @Test
+    void routesToTheProjectThreadWhenTheProjectHasOne() {
+        RecurringTask task = task(NotificationPolicy.ALWAYS);
+        task.setProjectName("maintenance");
+        Project withThread = new Project();
+        withThread.setName("maintenance");
+        withThread.setTelegramThreadId(99);
+        when(projectThreadService.forumChatId()).thenReturn(-1004352885219L);
+        when(projectService.findProjectByName("maintenance")).thenReturn(java.util.Optional.of(withThread));
+
+        notifier.notify(task, new RecurringTaskRunOutcome(RunStatus.OK, 0, "tout va bien", null));
+
+        verify(telegramSender).sendMessage(eq(-1004352885219L), eq(99), anyString());
+        verify(telegramSender, never()).sendMessage(anyLong(), anyString());
+    }
+
+    @Test
+    void fallsBackToNotificationChatIdWhenThreadsAreConfiguredButTheProjectHasNone() {
+        RecurringTask task = task(NotificationPolicy.ALWAYS);
+        task.setProjectName("maintenance");
+        when(projectThreadService.forumChatId()).thenReturn(-1004352885219L);
+        when(projectService.findProjectByName("maintenance")).thenReturn(java.util.Optional.empty());
+
+        notifier.notify(task, new RecurringTaskRunOutcome(RunStatus.OK, 0, "tout va bien", null));
+
+        verify(telegramSender).sendMessage(eq(1595302518L), anyString());
     }
 
     private static RecurringTask task(NotificationPolicy policy) {

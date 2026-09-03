@@ -15,18 +15,21 @@ import fr.ses10doigts.agentvps.service.ClaudeCliException;
 import fr.ses10doigts.agentvps.service.ProjectException;
 import fr.ses10doigts.agentvps.service.ProjectOnboardingService;
 import fr.ses10doigts.agentvps.service.ProjectService;
+import fr.ses10doigts.agentvps.service.ProjectThreadService;
 import fr.ses10doigts.agentvps.service.RecurringTaskCreationWizard;
 import fr.ses10doigts.agentvps.service.RecurringTaskException;
 import fr.ses10doigts.agentvps.service.RecurringTaskManager;
 import fr.ses10doigts.agentvps.service.RecurringTaskService;
 import fr.ses10doigts.telegrambots.model.TelegramMessageReference;
 import fr.ses10doigts.telegrambots.model.TelegramUpdateContext;
+import fr.ses10doigts.telegrambots.model.TelegramView;
 import fr.ses10doigts.telegrambots.service.sender.TelegramMarkdownUtils;
 import fr.ses10doigts.telegrambots.service.sender.TelegramSender;
 import fr.ses10doigts.telegrambots.service.sender.TelegramSenderRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.ObjectProvider;
@@ -39,6 +42,7 @@ import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -66,6 +70,9 @@ class AgentVpsTelegramControllerTest {
     private RecurringTaskCreationWizard recurringTaskWizard;
 
     @Mock
+    private ProjectThreadService projectThreadService;
+
+    @Mock
     private TelegramSender telegramSender;
 
     @Mock
@@ -90,7 +97,7 @@ class AgentVpsTelegramControllerTest {
         lenient().when(telegramSenderRegistry.getDefaultBotSender()).thenReturn(telegramSender);
         controller = new AgentVpsTelegramController(
                 projectService, onboardingService, chatService, recurringTaskService, recurringTaskManager,
-                recurringTaskWizard, telegramSenderProvider, telegramSenderRegistryProvider);
+                recurringTaskWizard, projectThreadService, telegramSenderProvider, telegramSenderRegistryProvider);
     }
 
     // ---------------------------------------------------------------- /projet
@@ -178,22 +185,48 @@ class AgentVpsTelegramControllerTest {
         verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("a ete cree mais l'interview a echoue"));
     }
 
+    // Feature Threads = projets (02/09/2026) : /projet delete ne supprime plus jamais
+    // directement (archiveProject, reversible) - il demande d'abord confirmation via un
+    // clavier inline (voir confirmProjectDeletion/cancelProjectDeletion plus bas), la
+    // suppression reelle passant par ProjectService.deleteProjectPermanently.
+
     @Test
-    void projetDeleteArchivesTheActiveProjectWhenNoNameGiven() {
+    void projetDeleteAsksConfirmationForTheActiveProjectWhenNoNameGiven() {
         when(projectService.getActiveProject()).thenReturn(Optional.of(project("mon-projet", ProjectStatus.ACTIVE, null)));
 
         controller.projet(context(10L, "/projet delete", List.of("delete")));
 
-        verify(projectService).archiveProject("mon-projet");
-        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("mon-projet"));
+        ArgumentCaptor<TelegramView> viewCaptor = ArgumentCaptor.forClass(TelegramView.class);
+        verify(telegramSender).sendView(eq(10L), viewCaptor.capture());
+        TelegramView view = viewCaptor.getValue();
+        org.assertj.core.api.Assertions.assertThat(view.getText())
+                .contains("mon-projet")
+                .contains("IRREVERSIBLE");
+        org.assertj.core.api.Assertions.assertThat(view.getButtons().getFirst())
+                .extracting(fr.ses10doigts.telegrambots.model.TelegramButtonView::getCallbackData)
+                .containsExactly("projet:delete:confirm", "projet:delete:cancel");
+        verify(projectService, never()).deleteProjectPermanently(any());
     }
 
     @Test
-    void projetDeleteArchivesTheNamedProjectWhenGiven() {
+    void projetDeleteAsksConfirmationForTheNamedProjectWhenGiven() {
+        when(projectService.getProject("autre-projet")).thenReturn(project("autre-projet", ProjectStatus.ACTIVE, null));
+
         controller.projet(context(10L, "/projet delete autre-projet", List.of("delete", "autre-projet")));
 
-        verify(projectService).archiveProject("autre-projet");
+        verify(telegramSender).sendView(eq(10L), any());
         verify(projectService, never()).getActiveProject();
+        verify(projectService, never()).deleteProjectPermanently(any());
+    }
+
+    @Test
+    void projetDeleteWithUnknownNameReportsNotFoundWithoutAskingConfirmation() {
+        when(projectService.getProject("inconnu")).thenThrow(new ProjectException("Aucun projet nomme 'inconnu'"));
+
+        controller.projet(context(10L, "/projet delete inconnu", List.of("delete", "inconnu")));
+
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("Aucun projet nomme 'inconnu'"));
+        verify(telegramSender, never()).sendView(any(), any());
     }
 
     @Test
@@ -202,8 +235,48 @@ class AgentVpsTelegramControllerTest {
 
         controller.projet(context(10L, "/projet delete", List.of("delete")));
 
-        verify(projectService, never()).archiveProject(any());
+        verify(projectService, never()).deleteProjectPermanently(any());
         verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("Precise un nom"));
+    }
+
+    @Test
+    void confirmProjectDeletionDeletesTheProjectAndItsThreadThenRepliesOutsideAnyThread() {
+        when(projectService.getActiveProject()).thenReturn(Optional.of(project("mon-projet", ProjectStatus.ACTIVE, null)));
+        controller.projet(context(10L, "/projet delete", List.of("delete")));
+
+        Project toDelete = project("mon-projet", ProjectStatus.ACTIVE, null);
+        toDelete.setTelegramThreadId(77);
+        when(projectService.getProject("mon-projet")).thenReturn(toDelete);
+
+        controller.confirmProjectDeletion(callbackContext(10L, null, "projet:delete:confirm"));
+
+        verify(projectService).deleteProjectPermanently("mon-projet");
+        verify(projectThreadService).deleteTopic(77);
+        verify(telegramSender).sendMessage(eq(10L), isNull(),
+                org.mockito.ArgumentMatchers.contains("supprime definitivement"));
+    }
+
+    @Test
+    void confirmProjectDeletionWithNothingPendingDoesNotDeleteAnything() {
+        controller.confirmProjectDeletion(callbackContext(10L, null, "projet:delete:confirm"));
+
+        verify(projectService, never()).deleteProjectPermanently(any());
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("Rien a confirmer"));
+    }
+
+    @Test
+    void cancelProjectDeletionClearsThePendingRequestWithoutDeleting() {
+        when(projectService.getActiveProject()).thenReturn(Optional.of(project("mon-projet", ProjectStatus.ACTIVE, null)));
+        controller.projet(context(10L, "/projet delete", List.of("delete")));
+
+        controller.cancelProjectDeletion(callbackContext(10L, null, "projet:delete:cancel"));
+
+        verify(projectService, never()).deleteProjectPermanently(any());
+        verify(telegramSender).sendMessage(10L, "Suppression annulee.");
+
+        // Confirmer apres coup ne doit plus rien faire (etat efface par l'annulation).
+        controller.confirmProjectDeletion(callbackContext(10L, null, "projet:delete:confirm"));
+        verify(projectService, never()).deleteProjectPermanently(any());
     }
 
     @Test
@@ -597,15 +670,174 @@ class AgentVpsTelegramControllerTest {
         verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("Impossible d'executer la tache"));
     }
 
+    // -------------------------------------------------- Threads = projets (02/09/2026)
+
+    @Test
+    void projetBareIsDisabledWhenThreadsAreActiveInThisChat() {
+        when(projectThreadService.isForumChat(10L)).thenReturn(true);
+
+        controller.projet(context(10L, "/projet", List.of()));
+
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("desactivee"));
+        verify(projectService, never()).getActiveProject();
+    }
+
+    @Test
+    void projetListIsDisabledWhenThreadsAreActiveInThisChat() {
+        when(projectThreadService.isForumChat(10L)).thenReturn(true);
+
+        controller.projet(context(10L, "/projet list", List.of("list")));
+
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("desactivee"));
+        verify(projectService, never()).listProjects();
+    }
+
+    @Test
+    void projetSwitchIsDisabledWhenThreadsAreActiveInThisChat() {
+        when(projectThreadService.isForumChat(10L)).thenReturn(true);
+
+        controller.projet(context(10L, "/projet autre-projet", List.of("autre-projet")));
+
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("desactivee"));
+        verify(projectService, never()).switchProject(any());
+    }
+
+    @Test
+    void projetNewStaysAvailableWhenThreadsAreActive() {
+        when(projectThreadService.isForumChat(10L)).thenReturn(true);
+        Project created = project("mon-projet", ProjectStatus.ACTIVE, null);
+        when(onboardingService.createProjectAndStartOnboarding("mon-projet"))
+                .thenReturn(new ProjectOnboardingService.OnboardingResult(
+                        created, new Conversation("session-1", Instant.now(), Instant.now(), null, 0), "Question ?"));
+
+        controller.projet(context(10L, "/projet new mon-projet", List.of("new", "mon-projet")));
+
+        verify(onboardingService).createProjectAndStartOnboarding("mon-projet");
+    }
+
+    @Test
+    void projetNewCreatesAForumTopicWhenThreadsAreEnabled() {
+        Project created = project("mon-projet", ProjectStatus.ACTIVE, null);
+        when(onboardingService.createProjectAndStartOnboarding("mon-projet"))
+                .thenReturn(new ProjectOnboardingService.OnboardingResult(
+                        created, new Conversation("session-1", Instant.now(), Instant.now(), null, 0), "Question ?"));
+        when(projectThreadService.isEnabled()).thenReturn(true);
+        when(projectThreadService.createTopicForProject(created)).thenReturn(Optional.of(55));
+
+        controller.projet(context(10L, "/projet new mon-projet", List.of("new", "mon-projet")));
+
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("Thread Telegram cree"));
+    }
+
+    @Test
+    void projetNewReportsWhenForumTopicCreationFails() {
+        Project created = project("mon-projet", ProjectStatus.ACTIVE, null);
+        when(onboardingService.createProjectAndStartOnboarding("mon-projet"))
+                .thenReturn(new ProjectOnboardingService.OnboardingResult(
+                        created, new Conversation("session-1", Instant.now(), Instant.now(), null, 0), "Question ?"));
+        when(projectThreadService.isEnabled()).thenReturn(true);
+        when(projectThreadService.createTopicForProject(created)).thenReturn(Optional.empty());
+
+        controller.projet(context(10L, "/projet new mon-projet", List.of("new", "mon-projet")));
+
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("Impossible de creer le Thread"));
+    }
+
+    @Test
+    void chatInAForumThreadRoutesToTheProjectMappedToThatThreadInsteadOfTheActiveProject() {
+        when(projectThreadService.isForumChat(10L)).thenReturn(true);
+        Project mapped = project("mon-projet", ProjectStatus.ACTIVE, "session-1");
+        when(projectService.findProjectByThreadId(42)).thenReturn(Optional.of(mapped));
+        when(telegramSender.sendFormattedMessageAndGetReference(eq(10L), any()))
+                .thenReturn(TelegramMessageReference.builder().chatId(10L).messageId(1).build());
+        ClaudeCliResult result = new ClaudeCliResult();
+        result.setResult("Reponse");
+        when(chatService.sendMessage(mapped, "Salut")).thenReturn(result);
+
+        controller.chat(context(10L, 42, "Salut", List.of()));
+
+        verify(chatService).sendMessage(mapped, "Salut");
+        verify(projectService, never()).getActiveProject();
+    }
+
+    @Test
+    void chatInForumGeneralTopicWithoutThreadAsksToUseAProjectThread() {
+        when(projectThreadService.isForumChat(10L)).thenReturn(true);
+        when(projectService.listProjects()).thenReturn(List.of(project("mon-projet", ProjectStatus.ACTIVE, null)));
+
+        controller.chat(context(10L, "Salut", List.of()));
+
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("Thread"));
+        verify(chatService, never()).sendMessage(any(), any());
+    }
+
+    @Test
+    void convInAForumThreadRoutesToTheProjectMappedToThatThreadInsteadOfTheActiveProject() {
+        when(projectThreadService.isForumChat(10L)).thenReturn(true);
+        Project mapped = project("mon-projet", ProjectStatus.ACTIVE, null);
+        when(projectService.findProjectByThreadId(42)).thenReturn(Optional.of(mapped));
+        when(projectService.getCurrentConversation("mon-projet")).thenReturn(Optional.empty());
+
+        controller.conv(context(10L, 42, "/conv", List.of()));
+
+        verify(telegramSender).sendFormattedMessage(eq(10L),
+                org.mockito.ArgumentMatchers.contains("pas de conversation en cours"));
+        verify(projectService, never()).getActiveProject();
+    }
+
+    @Test
+    void projetsInitReportsCreatedRecreatedAndKeptThreads() {
+        Project withoutThread = project("nouveau", ProjectStatus.ACTIVE, null);
+        Project withStaleThread = project("stale", ProjectStatus.ACTIVE, null);
+        withStaleThread.setTelegramThreadId(10);
+        Project withLiveThread = project("ok", ProjectStatus.ACTIVE, null);
+        withLiveThread.setTelegramThreadId(20);
+
+        when(projectThreadService.isEnabled()).thenReturn(true);
+        when(projectService.listProjects()).thenReturn(List.of(withoutThread, withStaleThread, withLiveThread));
+        when(projectThreadService.topicStillExists(10)).thenReturn(false);
+        when(projectThreadService.topicStillExists(20)).thenReturn(true);
+        when(projectThreadService.createTopicForProject(withoutThread)).thenReturn(Optional.of(30));
+        when(projectThreadService.createTopicForProject(withStaleThread)).thenReturn(Optional.of(31));
+
+        controller.projets(context(10L, "/projets init", List.of("init")));
+
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.argThat(msg ->
+                msg.contains("Crees : 1") && msg.contains("Recrees") && msg.contains("Deja en place : 1")
+        ));
+    }
+
+    @Test
+    void projetsInitDoesNothingWhenThreadsAreNotConfigured() {
+        controller.projets(context(10L, "/projets init", List.of("init")));
+
+        verify(telegramSender).sendMessage(eq(10L), org.mockito.ArgumentMatchers.contains("non configures"));
+        verify(projectService, never()).listProjects();
+    }
+
+    @Test
+    void projetsWithoutInitArgumentShowsUsage() {
+        controller.projets(context(10L, "/projets", List.of()));
+
+        verify(telegramSender).sendMessage(10L, "Usage : /projets init");
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private static TelegramUpdateContext context(Long chatId, String text, List<String> args) {
+        return context(chatId, null, text, args);
+    }
+
+    /** Variante avec messageThreadId explicite (feature Threads = projets, voir resolveContextProject). */
+    private static TelegramUpdateContext context(Long chatId, Integer messageThreadId, String text, List<String> args) {
         String command = (text != null && text.startsWith("/")) ? text.split("\\s+")[0] : null;
         return new TelegramUpdateContext(
                 "bot-1",
                 null,
                 null,
                 null,
+                messageThreadId,
+                messageThreadId != null,
                 chatId,
                 1L,
                 text,
@@ -614,6 +846,26 @@ class AgentVpsTelegramControllerTest {
                 args,
                 false,
                 null
+        );
+    }
+
+    /** Contexte d'une callback query (boutons inline, voir confirmProjectDeletion/cancelProjectDeletion). */
+    private static TelegramUpdateContext callbackContext(Long chatId, Integer messageThreadId, String callbackData) {
+        return new TelegramUpdateContext(
+                "bot-1",
+                null,
+                null,
+                null,
+                messageThreadId,
+                messageThreadId != null,
+                chatId,
+                1L,
+                null,
+                null,
+                null,
+                List.of(),
+                true,
+                callbackData
         );
     }
 

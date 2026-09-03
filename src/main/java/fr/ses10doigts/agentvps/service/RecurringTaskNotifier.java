@@ -2,6 +2,7 @@ package fr.ses10doigts.agentvps.service;
 
 import fr.ses10doigts.agentvps.config.RecurringTaskProperties;
 import fr.ses10doigts.agentvps.model.NotificationPolicy;
+import fr.ses10doigts.agentvps.model.Project;
 import fr.ses10doigts.agentvps.model.RecurringTask;
 import fr.ses10doigts.agentvps.model.RecurringTaskRunOutcome;
 import fr.ses10doigts.telegrambots.service.sender.TelegramSender;
@@ -44,25 +45,11 @@ public class RecurringTaskNotifier {
 
     private final ObjectProvider<TelegramSenderRegistry> telegramSenderRegistryProvider;
     private final RecurringTaskProperties properties;
+    private final ProjectService projectService;
+    private final ProjectThreadService projectThreadService;
 
     public void notify(RecurringTask task, RecurringTaskRunOutcome outcome) {
         if (!shouldSend(task.getNotificationPolicy(), outcome)) {
-            return;
-        }
-
-        String rawChatId = properties.getNotificationChatId();
-        if (rawChatId == null || rawChatId.isBlank()) {
-            log.warn("Notification due pour la tache '{}' (statut={}) mais aucun "
-                    + "agentvps.recurring-tasks.notification-chat-id configure : message non envoye",
-                    task.getName(), outcome.status());
-            return;
-        }
-
-        long chatId;
-        try {
-            chatId = Long.parseLong(rawChatId.trim());
-        } catch (NumberFormatException e) {
-            log.error("agentvps.recurring-tasks.notification-chat-id invalide (pas un entier) : '{}'", rawChatId);
             return;
         }
 
@@ -74,7 +61,43 @@ public class RecurringTaskNotifier {
         }
 
         TelegramSender sender = senderRegistry.getDefaultBotSender();
-        sender.sendMessage(chatId, formatMessage(task, outcome));
+        String message = formatMessage(task, outcome);
+
+        // Feature Threads = projets du 02/09/2026 (decision Clem) : si le projet de la
+        // tache a un Thread Telegram, la notification y est postee directement, plutot
+        // que dans le chat prive habituel - coherent avec le fait que toute la
+        // conversation de ce projet vit desormais dans ce Thread. Fallback sur
+        // notification-chat-id (comportement d'origine) si le projet n'a pas de Thread
+        // (Threads non configures, ou echec de creation - voir ProjectThreadService).
+        Long forumChatId = projectThreadService.forumChatId();
+        Integer threadId = (forumChatId != null)
+                ? projectService.findProjectByName(task.getProjectName())
+                        .map(Project::getTelegramThreadId)
+                        .orElse(null)
+                : null;
+
+        if (threadId != null) {
+            sender.sendMessage(forumChatId, threadId, message);
+            return;
+        }
+
+        String rawChatId = properties.getNotificationChatId();
+        if (rawChatId == null || rawChatId.isBlank()) {
+            log.warn("Notification due pour la tache '{}' (statut={}) mais aucun "
+                    + "agentvps.recurring-tasks.notification-chat-id configure (et pas de Thread projet) : "
+                    + "message non envoye", task.getName(), outcome.status());
+            return;
+        }
+
+        long chatId;
+        try {
+            chatId = Long.parseLong(rawChatId.trim());
+        } catch (NumberFormatException e) {
+            log.error("agentvps.recurring-tasks.notification-chat-id invalide (pas un entier) : '{}'", rawChatId);
+            return;
+        }
+
+        sender.sendMessage(chatId, message);
     }
 
     private static boolean shouldSend(NotificationPolicy policy, RecurringTaskRunOutcome outcome) {

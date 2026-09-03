@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.Normalizer;
+import java.util.Comparator;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
@@ -267,6 +268,133 @@ public class ProjectService {
                     .ifPresent(c -> c.setMessagesSinceReinforcement(
                             reinforcementApplied ? 0 : c.getMessagesSinceReinforcement() + 1));
             persist();
+        }
+    }
+
+    /**
+     * Variante "sans exception" de {@link #getProject(String)} (feature Threads = projets
+     * du 02/09/2026, voir ProjectThreadService/RecurringTaskNotifier) : les deux appelants
+     * concernes veulent un fallback silencieux (pas de Thread configure / projet supprime
+     * entre-temps) plutot qu'une ProjectException a chaque fois.
+     */
+    public Optional<Project> findProjectByName(String name) {
+        synchronized (lock) {
+            return findProject(name);
+        }
+    }
+
+    /**
+     * Retrouve le projet associe a un sujet (topic) de forum Telegram (feature Threads =
+     * projets du 02/09/2026) : c'est ce qui permet a AgentVpsTelegramController de resoudre
+     * le projet concerne par un message a partir de son messageThreadId, sans passer par
+     * la notion de "projet actif" global (voir Project.telegramThreadId).
+     */
+    public Optional<Project> findProjectByThreadId(Integer threadId) {
+        if (threadId == null) {
+            return Optional.empty();
+        }
+        synchronized (lock) {
+            return store().getProjects().values().stream()
+                    .filter(p -> threadId.equals(p.getTelegramThreadId()))
+                    .findFirst();
+        }
+    }
+
+    /**
+     * Enregistre le messageThreadId du sujet Telegram cree pour ce projet (voir
+     * ProjectThreadService.createTopicForProject, seul appelant a ce jour).
+     */
+    public void setThreadId(String name, Integer threadId) {
+        synchronized (lock) {
+            Project project = getProject(name);
+            project.setTelegramThreadId(threadId);
+            persist();
+            log.info("Thread Telegram associe au projet '{}' (messageThreadId={})", project.getName(), threadId);
+        }
+    }
+
+    /**
+     * Suppression REELLE et irreversible d'un projet (feature Threads = projets du
+     * 02/09/2026, decision Clem : /projet delete ne se contente plus d'archiver, voir
+     * archiveProject ci-dessous conserve pour compatibilite mais plus appele depuis le
+     * controller) : retire le projet du store (donc tout son historique de conversations),
+     * supprime son dossier de travail sur disque, et fait un best-effort pour supprimer
+     * aussi les transcripts que Claude Code (le CLI) conserve de son cote sous
+     * ~/.claude/projects/&lt;cwd sanitise&gt;, independamment de notre ProjectStore (voir
+     * deleteClaudeCodeTranscriptsBestEffort). Le projet "system" (elevated) ne peut pas
+     * etre supprime par cette voie : son working directory est la racine du workspace
+     * (voir ELEVATED_PROJECT_SLUG), le supprimer supprimerait donc AgentVPS lui-meme.
+     *
+     * La suppression du Thread Telegram associe (si le projet en a un) n'est PAS geree
+     * ici : ce service ne connait pas Telegram, voir ProjectThreadService.deleteTopic,
+     * appele par AgentVpsTelegramController juste apres cette methode.
+     */
+    public Project deleteProjectPermanently(String name) {
+        synchronized (lock) {
+            Project project = getProject(name);
+            if (project.isElevated()) {
+                throw new ProjectException("Le projet '" + project.getName() + "' ne peut pas etre supprime (droits elargis)");
+            }
+
+            store().getProjects().remove(project.getName());
+            if (project.getName().equals(store().getActiveProjectName())) {
+                store().setActiveProjectName(null);
+            }
+            persist();
+
+            deleteDirectoryBestEffort(pathOrNull(project.getWorkingDirectory()), "dossier de travail", project.getName());
+            deleteClaudeCodeTranscriptsBestEffort(project);
+
+            log.info("Projet '{}' supprime definitivement (dossier {})", project.getName(), project.getWorkingDirectory());
+            return project;
+        }
+    }
+
+    /**
+     * Best-effort : Claude Code (le CLI) conserve ses propres transcripts de conversation
+     * sous ~/.claude/projects/&lt;cwd absolu sanitise&gt; (chaque caractere non
+     * alphanumerique du chemin remplace par '-', convention observee du CLI), tout a fait
+     * independamment de notre propre ProjectStore/historique de Conversation. Les
+     * supprimer aussi rend la suppression du projet reellement irreversible cote "tout ce
+     * que Claude sait de ce projet" (demande explicite de Clem), pas seulement cote
+     * AgentVPS. Non bloquant si absent ou inaccessible : ~/.claude appartient a
+     * l'utilisateur systeme qui lance claude (voir claude_fs_permissions.md), qui peut
+     * differer de celui qui execute AgentVPS selon l'environnement (dev vs VPS).
+     */
+    private void deleteClaudeCodeTranscriptsBestEffort(Project project) {
+        Path workingDirectory = pathOrNull(project.getWorkingDirectory());
+        if (workingDirectory == null) {
+            return;
+        }
+        String sanitized = workingDirectory.toAbsolutePath().normalize().toString()
+                .replaceAll("[^a-zA-Z0-9]", "-");
+        Path claudeProjectDir = Path.of(System.getProperty("user.home"), ".claude", "projects", sanitized);
+        deleteDirectoryBestEffort(claudeProjectDir, "transcripts Claude Code", project.getName());
+    }
+
+    private static Path pathOrNull(String rawPath) {
+        return (rawPath == null || rawPath.isBlank()) ? null : Path.of(rawPath);
+    }
+
+    private void deleteDirectoryBestEffort(Path dir, String what, String projectName) {
+        if (dir == null) {
+            return;
+        }
+        try {
+            if (!Files.exists(dir)) {
+                return;
+            }
+            try (var walk = Files.walk(dir)) {
+                walk.sorted(Comparator.reverseOrder()).forEach(p -> {
+                    try {
+                        Files.delete(p);
+                    } catch (IOException e) {
+                        log.warn("Impossible de supprimer {} ({}) du projet '{}'", p, what, projectName, e);
+                    }
+                });
+            }
+        } catch (IOException e) {
+            log.warn("Echec de la suppression du {} du projet '{}' ({})", what, projectName, dir, e);
         }
     }
 
