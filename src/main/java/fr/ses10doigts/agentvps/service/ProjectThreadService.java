@@ -88,6 +88,13 @@ public class ProjectThreadService {
         return forumChatId != null && forumChatId.equals(chatId);
     }
 
+    /** Indique si un projet doit etre expose dans l'interface Telegram. */
+    public boolean isVisibleInTelegram(Project project) {
+        return project != null
+                && (!ProjectService.ELEVATED_PROJECT_SLUG.equals(project.getName())
+                || properties.isSystemProjectVisible());
+    }
+
     /**
      * Cree le sujet Telegram d'un projet et enregistre son messageThreadId sur le projet
      * (ProjectService.setThreadId). Ne fait rien (Optional vide) si les Threads ne sont
@@ -95,6 +102,10 @@ public class ProjectThreadService {
      * jamais leve vers l'appelant - voir javadoc de la classe).
      */
     public Optional<Integer> createTopicForProject(Project project) {
+        if (!isVisibleInTelegram(project)) {
+            log.debug("Projet '{}' masque de Telegram : aucun Thread cree", project.getName());
+            return Optional.empty();
+        }
         Long forumChatId = forumChatId();
         if (forumChatId == null) {
             return Optional.empty();
@@ -109,7 +120,7 @@ public class ProjectThreadService {
             String title = pickEmoji(project.getName()) + " " + project.getName();
             TelegramTopicIconColor color = pickIconColor(project.getName());
             TelegramForumTopic topic = sender.createForumTopic(forumChatId, title, color, null);
-            projectService.setThreadId(project.getName(), topic.getMessageThreadId());
+            projectService.recordTelegramThreadId(project.getName(), topic.getMessageThreadId());
             log.info("Thread Telegram cree pour le projet '{}' (messageThreadId={})",
                     project.getName(), topic.getMessageThreadId());
             return Optional.ofNullable(topic.getMessageThreadId());

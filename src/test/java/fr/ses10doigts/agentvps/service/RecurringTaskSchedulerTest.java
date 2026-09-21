@@ -1,5 +1,6 @@
 package fr.ses10doigts.agentvps.service;
 
+import fr.ses10doigts.agentvps.config.ClaudeCliProperties;
 import fr.ses10doigts.agentvps.model.ClaudeCliResult;
 import fr.ses10doigts.agentvps.model.NotificationPolicy;
 import fr.ses10doigts.agentvps.model.Project;
@@ -58,7 +59,8 @@ class RecurringTaskSchedulerTest {
     @BeforeEach
     void setUp() {
         scheduler = new RecurringTaskScheduler(
-                taskScheduler, recurringTaskService, projectService, scriptExecutionService, notifier, agentMissionExecutionService);
+                taskScheduler, recurringTaskService, projectService, scriptExecutionService, notifier,
+                agentMissionExecutionService, new ClaudeCliProperties());
         lenient().when(recurringTaskService.findTask("healthcheck")).thenReturn(Optional.of(task("healthcheck")));
         lenient().when(projectService.getProject("maintenance")).thenReturn(project("maintenance"));
     }

@@ -6,11 +6,17 @@ import fr.ses10doigts.agentvps.config.ClaudeProvider;
 import fr.ses10doigts.agentvps.model.ClaudeCliResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ClaudeCliServiceTest {
@@ -140,6 +146,13 @@ class ClaudeCliServiceTest {
     }
 
     @Test
+    void defaultPropertiesDisableConversationCaptureByDefault() {
+        ClaudeCliProperties defaults = new ClaudeCliProperties();
+
+        assertThat(defaults.isCaptureConversationLogs()).isFalse();
+    }
+
+    @Test
     void buildsCommandForOpenRouterProviderWithModel() {
         properties.setProvider(ClaudeProvider.OPENROUTER);
         properties.setOpenRouterBinaryPath("/home/agentvps/.local/bin/ori");
@@ -174,6 +187,80 @@ class ClaudeCliServiceTest {
 
         assertThat(command.getFirst()).isEqualTo("/home/agentvps/.local/bin/claude");
         assertThat(command).doesNotContain("ori", "--model");
+    }
+
+    @Test
+    void buildsStreamJsonCommandWithVerboseWhenCaptureRequested() {
+        List<String> command = service.buildCommand("bonjour", null, null, null, true);
+
+        assertThat(command).containsExactly(
+                "/home/agentvps/.local/bin/claude", "-p", "bonjour", "--output-format", "stream-json",
+                "--verbose");
+    }
+
+    @Test
+    void buildsPlainJsonCommandWhenStreamJsonFalse() {
+        List<String> command = service.buildCommand("bonjour", null, null, null, false);
+
+        assertThat(command).doesNotContain("stream-json", "--verbose");
+        assertThat(command).contains("--output-format", "json");
+    }
+
+    @Test
+    void fourArgBuildCommandDelegatesToPlainJson() {
+        List<String> command = service.buildCommand("bonjour", null, null, null);
+
+        assertThat(command).containsExactly(
+                "/home/agentvps/.local/bin/claude", "-p", "bonjour", "--output-format", "json");
+    }
+
+    @Test
+    void extractsLastNonBlankLineFromStreamJsonOutput() {
+        String stdout = "{\"type\":\"system\"}\n{\"type\":\"assistant\"}\n\n"
+                + "{\"type\":\"result\",\"is_error\":false,\"session_id\":\"s-1\"}\n";
+
+        String lastLine = ClaudeCliService.lastNonBlankLine(stdout);
+
+        assertThat(lastLine).isEqualTo("{\"type\":\"result\",\"is_error\":false,\"session_id\":\"s-1\"}");
+    }
+
+    @Test
+    void lastNonBlankLineReturnsWholeStringWhenNoLineFound() {
+        assertThat(ClaudeCliService.lastNonBlankLine("   \n  \n")).isEqualTo("   \n  \n");
+    }
+
+    @Test
+    void appendCaptureWritesRawOutputAndCreatesParentDirectory(@TempDir Path tempDir) throws IOException {
+        Path captureLogPath = tempDir.resolve("sous-dossier").resolve("chat.jsonl");
+
+        service.appendCapture(captureLogPath, "{\"type\":\"system\"}\n{\"type\":\"result\"}");
+
+        assertThat(Files.readString(captureLogPath, StandardCharsets.UTF_8))
+                .isEqualTo("{\"type\":\"system\"}\n{\"type\":\"result\"}\n");
+    }
+
+    @Test
+    void appendCaptureAppendsAcrossMultipleCalls(@TempDir Path tempDir) throws IOException {
+        Path captureLogPath = tempDir.resolve("chat.jsonl");
+
+        service.appendCapture(captureLogPath, "{\"type\":\"system\"}");
+        service.appendCapture(captureLogPath, "{\"type\":\"result\"}");
+
+        assertThat(Files.readString(captureLogPath, StandardCharsets.UTF_8))
+                .isEqualTo("{\"type\":\"system\"}\n{\"type\":\"result\"}\n");
+    }
+
+    @Test
+    void appendCaptureDoesNotThrowWhenPathIsUnwritable(@TempDir Path tempDir) throws IOException {
+        // Un fichier existant utilise comme "dossier parent" force Files.createDirectories
+        // a echouer (IOException) - verifie que appendCapture reste best-effort (voir
+        // javadoc) et ne remonte jamais l'exception.
+        Path fakeParent = tempDir.resolve("pas-un-dossier");
+        Files.writeString(fakeParent, "je suis un fichier, pas un dossier");
+        Path captureLogPath = fakeParent.resolve("chat.jsonl");
+
+        assertThatCode(() -> service.appendCapture(captureLogPath, "{}"))
+                .doesNotThrowAnyException();
     }
 
     @Test

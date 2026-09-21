@@ -106,4 +106,21 @@ public class ClaudeCliProperties {
      * a ajuster a l'usage reel.
      */
     private int reinforcementEveryMessages = 10;
+
+    /**
+     * Active la capture JSONL du flux complet des messages @Chat (ChatService), en passant
+     * --output-format stream-json --verbose au lieu de json UNIQUEMENT pour ces appels
+     * (voir ClaudeCliService.call() surcharge a 7 arguments) - false par defaut, a activer
+     * explicitement. Le fichier de capture est ecrit sous
+     * WorkspaceProperties.conversationLogsDir()/<projet>/chat.jsonl (append-only).
+     *
+     * IMPORTANT (verifie le 03/09/2026, voir memoire projet "continuous_improvement_capture") :
+     * le texte du raisonnement ("thinking") n'est reellement peuple dans ce flux que si
+     * provider=OPENROUTER (route via Ori, cle API) - il reste une chaine vide via le canal
+     * OAuth/abonnement natif du binaire "claude" (politique produit de ce canal, pas une
+     * limite de stream-json en general). Activer cette option sans provider=OPENROUTER
+     * capture quand meme le texte visible et les tool_use/tool_result, mais pas le
+     * raisonnement.
+     */
+    private boolean captureConversationLogs = false;
 }

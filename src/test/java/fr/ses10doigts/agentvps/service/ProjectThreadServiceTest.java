@@ -104,7 +104,7 @@ class ProjectThreadServiceTest {
 
         assertThat(service.createTopicForProject(project)).contains(55);
 
-        verify(projectService).setThreadId("mon-projet", 55);
+        verify(projectService).recordTelegramThreadId("mon-projet", 55);
     }
 
     @Test
@@ -116,6 +116,34 @@ class ProjectThreadServiceTest {
 
         assertThat(service.createTopicForProject(project)).isEmpty();
         verify(projectService, never()).setThreadId(any(), any());
+    }
+
+    @Test
+    void createTopicForSystemProjectDoesNothingWhenSystemVisibilityIsDisabled() {
+        properties.setForumChatId(FORUM_CHAT_ID.toString());
+        Project project = project("system");
+        project.setElevated(true);
+
+        assertThat(service.createTopicForProject(project)).isEmpty();
+        verify(telegramSenderRegistryProvider, never()).getIfAvailable();
+    }
+
+    @Test
+    void createTopicForSystemProjectIsAllowedWhenSystemVisibilityIsEnabled() {
+        properties.setForumChatId(FORUM_CHAT_ID.toString());
+        properties.setSystemProjectVisible(true);
+        Project project = project("system");
+        project.setElevated(true);
+        TelegramForumTopic topic = TelegramForumTopic.builder()
+                .messageThreadId(56)
+                .name("system")
+                .iconColor(TelegramTopicIconColor.BLUE)
+                .build();
+        when(telegramSender.createForumTopic(eq(FORUM_CHAT_ID), any(), any(), isNull())).thenReturn(topic);
+
+        assertThat(service.createTopicForProject(project)).contains(56);
+
+        verify(projectService).recordTelegramThreadId("system", 56);
     }
 
     @Test

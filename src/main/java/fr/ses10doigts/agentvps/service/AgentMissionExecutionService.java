@@ -50,12 +50,26 @@ public class AgentMissionExecutionService {
     private final RecurringTaskProperties properties;
 
     public ClaudeCliResult run(String missionPrompt, Path workingDirectory) {
+        return run(missionPrompt, workingDirectory, null);
+    }
+
+    /**
+     * Variante permettant a une mission executee depuis le projet system d'utiliser le
+     * fichier de permissions elargies correspondant a ce projet.
+     */
+    public ClaudeCliResult run(String missionPrompt, Path workingDirectory, String settingsPathOverride) {
         if (missionPrompt == null || missionPrompt.isBlank()) {
             throw new IllegalArgumentException("La mission a confier a l'agent ne peut pas etre vide");
         }
         log.info("Execution mission agent (cwd={}, timeout={}s)", workingDirectory, properties.getAgentMissionTimeoutSeconds());
+        if (settingsPathOverride == null || settingsPathOverride.isBlank()) {
+            return claudeCliService.call(
+                    missionPrompt, null, workingDirectory, APPEND_SYSTEM_PROMPT,
+                    properties.getAgentMissionTimeoutSeconds());
+        }
         return claudeCliService.call(
-                missionPrompt, null, workingDirectory, APPEND_SYSTEM_PROMPT, properties.getAgentMissionTimeoutSeconds());
+                missionPrompt, null, workingDirectory, APPEND_SYSTEM_PROMPT,
+                properties.getAgentMissionTimeoutSeconds(), settingsPathOverride);
     }
 
     private static String loadPromptResource(String fileName) {

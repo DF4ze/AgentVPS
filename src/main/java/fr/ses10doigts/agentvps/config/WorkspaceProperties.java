@@ -45,4 +45,14 @@ public class WorkspaceProperties {
     public Path recurringTasksStoreFile() {
         return rootDirPath().resolve("recurring-tasks-store.json");
     }
+
+    /**
+     * Dossier des logs de conversation captures en JSONL (flux complet claude, raisonnement
+     * inclus quand le provider le permet - voir ClaudeCliProperties.captureConversationLogs
+     * et la memoire projet "continuous_improvement_capture") : un fichier par projet sous
+     * conversationLogsDir()/<projet>/chat.jsonl, alimente en continu (append-only).
+     */
+    public Path conversationLogsDir() {
+        return rootDirPath().resolve("conversation-logs");
+    }
 }

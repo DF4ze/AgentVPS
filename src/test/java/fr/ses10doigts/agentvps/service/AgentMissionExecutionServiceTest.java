@@ -68,4 +68,18 @@ class AgentMissionExecutionServiceTest {
         assertThatThrownBy(() -> service.run("   ", Path.of("/tmp")))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void runCanUseAnElevatedSettingsFile() {
+        Path cwd = Path.of("/home/agentvps/AgentVPS");
+        ClaudeCliResult expected = new ClaudeCliResult();
+        when(claudeCliService.call(eq("Analyse systeme"), isNull(), eq(cwd), any(), eq(600),
+                eq("/home/agentvps/.config/agentvps/claude-settings-system.json")))
+                .thenReturn(expected);
+
+        ClaudeCliResult result = service.run("Analyse systeme", cwd,
+                "/home/agentvps/.config/agentvps/claude-settings-system.json");
+
+        assertThat(result).isEqualTo(expected);
+    }
 }

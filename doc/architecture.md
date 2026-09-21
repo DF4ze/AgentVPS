@@ -1,6 +1,6 @@
 # Architecture logicielle — AgentVPS
 
-*Dernière mise à jour : 02/09/2026*
+*Dernière mise à jour : 21/09/2026*
 
 ## 1. Principe
 
@@ -50,7 +50,7 @@ travail (`cwd`) du projet actif, ce qui fait charger automatiquement le
 - **`ProjectService`** — CRUD projets + historique de conversations, table
   `projet → session_id courant`. Mono-utilisateur : un seul "projet actif"
   global. Gère aussi le compteur de renforcement périodique et le slug réservé
-  `system` (projet à droits élargis, voir §6).
+  `system` (projet à droits élargis, créé automatiquement au démarrage, voir §6).
 - **`ChatService`** — orchestration d'un message `@Chat` : décide s'il faut
   reprendre la conversation (`--resume`) ou en démarrer une nouvelle, injecte
   le renforcement périodique si dû, choisit le fichier `--settings` (standard
@@ -74,8 +74,12 @@ travail (`cwd`) du projet actif, ce qui fait charger automatiquement le
   normal (WARNING/CRITICAL), pas une erreur.
 - **`AgentMissionExecutionService`** — exécute une tâche en mode
   `AGENT_MISSION` : délègue à `ClaudeCliService` avec un prompt libre, un
-  system prompt additionnel dédié, et un timeout séparé (une mission peut
-  enchaîner plusieurs appels réseau/MCP).
+  system prompt additionnel dédié, le fichier `--settings` adapté au projet, et
+  un timeout séparé (une mission peut enchaîner plusieurs appels réseau/MCP).
+- **`SystemProjectBootstrap`** — garantit au démarrage l'existence du projet
+  réservé `system`, sans onboarding Claude et sans modifier le projet actif.
+- **`ContinuousImprovementMissionBootstrap`** — crée au démarrage la tâche
+  `amelioration-continue` si elle n'existe pas; elle est désactivée par défaut.
 - **`RecurringTaskNotifier`** — notification Telegram post-exécution, isolée
   pour qu'un échec d'envoi n'écrase jamais le résultat réel du run.
 
@@ -125,14 +129,20 @@ l'autre applicative :
    `~/.ssh`, `~/.claude`, `~/.ori`, `/etc`, `/root`, `sudo`, `rm -rf`, quel
    que soit le projet.
 
-Le projet réservé **`system`** (`Project.elevated=true`, créé via `/projet
-new system`) élargit la portée en changeant son `cwd` vers la racine du
+Le projet réservé **`system`** (`Project.elevated=true`, créé automatiquement
+au démarrage) élargit la portée en changeant son `cwd` vers la racine du
 workspace au lieu d'un sous-dossier isolé (les règles `Read/Write/Edit(**)`
 sont déjà relatives au cwd) — le `deny` reste strictement identique. Il
 utilise un fichier `--settings` dédié (`claude-settings-system.json`,
-quelques commandes de diagnostic en plus) et ne voit **pas** les autres
+quelques commandes de diagnostic et de lecture/agrégation en plus) et ne voit **pas** les autres
 applications du VPS (CristalBot, InstaBot... tournent sous `oklm`, home
 `700`, mur noyau identique).
+
+Sa visibilité dans Telegram est contrôlée par
+`agentvps.telegram.system-project-visible` (false par défaut). Ce réglage agit
+sur les listes et les Threads Telegram, pas sur l'existence du projet ni sur les
+missions internes. Lorsqu'il est activé et qu'un forum est configuré, le Thread
+du projet `system` est créé automatiquement après le démarrage de l'application.
 
 Un script curé (`scripts/change-project-permissions.sh`) permet au projet
 `system` de modifier le `settings.local.json` d'un projet enfant en
@@ -142,7 +152,28 @@ script passe par un process Bash normal, avec ses propres garde-fous
 (nom de projet validé, `system` explicitement exclu, écriture atomique,
 journalisation).
 
-## 7. Déploiement
+## 7. Amélioration continue
+
+La capture des conversations est optionnelle (`agentvps.claude.capture-conversation-logs`,
+désactivée par défaut). Quand elle est active, les appels de chat utilisent
+`--output-format stream-json --verbose` et ajoutent le flux brut dans
+`conversation-logs/<projet>/chat.jsonl`. Le raisonnement n'est présent dans ce
+flux que lorsque le provider `OPENROUTER` le fournit; le provider Anthropic natif
+capture tout de même les textes visibles et les événements d'outils.
+
+La tâche `amelioration-continue` est créée automatiquement mais reste désactivée.
+Une fois activée, elle analyse les JSONL depuis le projet `system` et met à jour
+uniquement `conversation-logs/analysis/script-candidates.md`. Elle propose des
+scripts/patterns à valider humainement : elle ne crée pas de tâche et ne modifie
+ni le code ni la configuration. Les sorties partielles d'un appel Claude en erreur
+ou en timeout ne sont pas capturées pour l'instant.
+
+État de validation au 21/09/2026 : l'implémentation et les tests automatisés
+sont présents, mais la feature n'a pas encore été testée en conditions réelles
+sur une instance complète avec captures Telegram, activation de la tâche et
+production du fichier de candidats.
+
+## 8. Déploiement
 
 Build Maven local → upload du jar → `systemctl restart agentvps`, automatisé
 via une opération curée de la gateway SSH (`build-deploy:agentvps`, voir

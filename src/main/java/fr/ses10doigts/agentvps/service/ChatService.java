@@ -1,6 +1,7 @@
 package fr.ses10doigts.agentvps.service;
 
 import fr.ses10doigts.agentvps.config.ClaudeCliProperties;
+import fr.ses10doigts.agentvps.config.WorkspaceProperties;
 import fr.ses10doigts.agentvps.model.ClaudeCliResult;
 import fr.ses10doigts.agentvps.model.Project;
 import lombok.RequiredArgsConstructor;
@@ -25,6 +26,13 @@ import java.nio.file.Path;
  * Separe de ProjectService (qui ne connait pas ClaudeCliService, meme raison que pour
  * ProjectOnboardingService) et du controller (garde le handler @Chat mince et cette
  * orchestration testable sans TelegramUpdateContext).
+ *
+ * Capture JSONL optionnelle (voir memoire projet "continuous_improvement_capture") :
+ * quand ClaudeCliProperties.captureConversationLogs est actif, le flux complet
+ * (stream-json, raisonnement inclus si provider=OPENROUTER) est ajoute a
+ * WorkspaceProperties.conversationLogsDir()/<projet>/chat.jsonl - un seul fichier
+ * roulant par projet pour l'instant (le session_id d'une toute nouvelle conversation
+ * n'est connu qu'apres l'appel, donc pas de decoupage par session en v1).
  */
 @Service
 @RequiredArgsConstructor
@@ -37,6 +45,7 @@ public class ChatService {
     private final ProjectService projectService;
     private final ClaudeCliService claudeCliService;
     private final ClaudeCliProperties claudeCliProperties;
+    private final WorkspaceProperties workspaceProperties;
 
     /**
      * Envoie un message libre au projet actif : reprend sa conversation courante
@@ -60,9 +69,13 @@ public class ChatService {
         // standard, pas de besoin dedie identifie pour l'instant sur ce projet).
         String settingsPathOverride = project.isElevated() ? claudeCliProperties.getElevatedSettingsPath() : null;
 
+        Path captureLogPath = claudeCliProperties.isCaptureConversationLogs()
+                ? workspaceProperties.conversationLogsDir().resolve(project.getName()).resolve("chat.jsonl")
+                : null;
+
         ClaudeCliResult result = claudeCliService.call(
                 prompt, sessionId, Path.of(project.getWorkingDirectory()), BASE_SYSTEM_PROMPT,
-                null, settingsPathOverride);
+                null, settingsPathOverride, captureLogPath);
 
         if (sessionId == null) {
             // Premier message de la conversation : le compteur du nouvel objet Conversation

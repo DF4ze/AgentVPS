@@ -42,6 +42,10 @@ rebuild nécessaire pour un simple changement de règle).
   - `projects/<slug>/` — dossier de travail + `CLAUDE.md` de chaque projet
   - `projects-store.json` — table projets/conversations
   - `recurring-tasks-store.json` — tâches récurrentes
+  - `conversation-logs/<projet>/chat.jsonl` — captures optionnelles du flux
+    Claude Code (`AGENTVPS_CLAUDE_CAPTURE_CONVERSATION_LOGS=true`)
+  - `conversation-logs/analysis/script-candidates.md` — synthèse produite par
+    la tâche désactivée `amelioration-continue`
   - `logs/permission-changes.log` — audit du script
     `change-project-permissions.sh`
 - Settings Claude Code : `/home/agentvps/.config/agentvps/claude-settings.json`
@@ -65,8 +69,8 @@ l'opération `build-deploy:agentvps` qui fait déjà la vérification.
 ## Commandes Telegram (bot `agentvps-bot`)
 
 - `/projet list | new <nom> | delete | <nom>` — gérer les projets (switch
-  actif en tapant son nom). `/projet new system` crée le projet à droits
-  élargis (voir `architecture.md` §6).
+  actif en tapant son nom). Le projet technique `system` est réservé et masqué
+  par défaut (voir `AGENTVPS_TELEGRAM_SYSTEM_PROJECT_VISIBLE`).
 - `/conv list | new | <numéro>` — conversations du projet actif
 - `/tache list | show <nom> | new ... | enable|disable|delete|run <nom>` —
   tâches récurrentes

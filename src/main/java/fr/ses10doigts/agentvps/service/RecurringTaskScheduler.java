@@ -1,5 +1,6 @@
 package fr.ses10doigts.agentvps.service;
 
+import fr.ses10doigts.agentvps.config.ClaudeCliProperties;
 import fr.ses10doigts.agentvps.model.ClaudeCliResult;
 import fr.ses10doigts.agentvps.model.Project;
 import fr.ses10doigts.agentvps.model.RecurringTask;
@@ -58,6 +59,7 @@ public class RecurringTaskScheduler implements ApplicationListener<ApplicationRe
     private final ScriptExecutionService scriptExecutionService;
     private final RecurringTaskNotifier notifier;
     private final AgentMissionExecutionService agentMissionExecutionService;
+    private final ClaudeCliProperties claudeCliProperties;
 
     private final ConcurrentHashMap<String, ScheduledFuture<?>> scheduledFutures = new ConcurrentHashMap<>();
     private final Set<String> runningTasks = ConcurrentHashMap.newKeySet();
@@ -159,8 +161,11 @@ public class RecurringTaskScheduler implements ApplicationListener<ApplicationRe
                     // ClaudeCliService.call() leve deja une exception (attrapee ci-dessous, meme
                     // chemin que ScriptExecutionException) en cas d'echec - un retour normal ici
                     // est donc toujours un succes.
-                    ClaudeCliResult result = agentMissionExecutionService.run(
-                            task.getMissionPrompt(), Path.of(project.getWorkingDirectory()));
+                    ClaudeCliResult result = project.isElevated()
+                            ? agentMissionExecutionService.run(task.getMissionPrompt(),
+                            Path.of(project.getWorkingDirectory()), claudeCliProperties.getElevatedSettingsPath())
+                            : agentMissionExecutionService.run(task.getMissionPrompt(),
+                            Path.of(project.getWorkingDirectory()));
                     String summary = truncate(result.getResult());
                     recurringTaskService.recordAgentRunResult(name, now, summary);
                     outcome = new RecurringTaskRunOutcome(RunStatus.OK, null, summary, null);

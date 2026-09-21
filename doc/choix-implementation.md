@@ -1,6 +1,6 @@
 # Choix d'implémentation — AgentVPS
 
-*Dernière mise à jour : 02/09/2026*
+*Dernière mise à jour : 21/09/2026*
 
 Ce document explique le **pourquoi** derrière les décisions techniques. Pour
 le **quoi** (structure du code), voir `architecture.md`.
@@ -130,3 +130,20 @@ gateway SSH (`build-deploy:agentvps`) plutôt que des commandes `execCommand`
 ad hoc — cohérent avec la philosophie déjà retenue pour la gateway
 ("commandes curées" plutôt qu'accès root libre, voir la mémoire projet
 `ssh_gateway_security`). Détail des commandes dans `quick-access.md`.
+
+## 11. Amélioration continue : capture optionnelle et proposition humaine
+
+La capture des conversations est désactivée par défaut pour éviter de produire
+des fichiers potentiellement volumineux sans décision explicite. Lorsqu'elle est
+activée, `ClaudeCliService` passe uniquement les appels de chat en
+`stream-json --verbose` et append le flux brut dans un JSONL par projet. Le
+résultat final est extrait de la dernière ligne `result`, ce qui conserve le
+contrat existant avec `ChatService`.
+
+La première étape d'analyse est une mission agent récurrente, créée au démarrage
+mais désactivée. Elle s'exécute dans le projet `system`, qui reçoit le fichier de
+permissions système ainsi que le `cwd` racine, et produit seulement une liste de
+candidats dans `conversation-logs/analysis/script-candidates.md`. La validation
+et la création effective de scripts restent humaines à ce stade. Les erreurs et
+timeouts ne sont pas capturés : le flux partiel pourrait être ajouté plus tard
+avec une stratégie de marquage explicite des runs incomplets.

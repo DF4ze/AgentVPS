@@ -1,6 +1,6 @@
 # Installation — AgentVPS
 
-*Dernière mise à jour : 03/09/2026*
+*Dernière mise à jour : 21/09/2026*
 
 Guide d'installation d'AgentVPS sur un serveur neuf (VPS Linux). Pour le
 *pourquoi* des choix techniques, voir `architecture.md` et
@@ -106,9 +106,11 @@ valeurs par défaut) :
 | `AGENTVPS_CLAUDE_TIMEOUT_SECONDS` | `120` | Timeout d'un appel `claude -p` (chat interactif) |
 | `AGENTVPS_CLAUDE_PERMISSION_MODE` | `dontAsk` | Mode de permission headless (§7) |
 | `AGENTVPS_CLAUDE_SETTINGS_PATH` | `/home/agentvps/.config/agentvps/claude-settings.json` | Fichier de règles allow/ask/deny |
+| `AGENTVPS_CLAUDE_CAPTURE_CONVERSATION_LOGS` | `false` | Capture JSONL des conversations pour l'amélioration continue |
 | `AGENTVPS_CLAUDE_PROVIDER` | `ANTHROPIC` | `ANTHROPIC` ou `OPENROUTER` (§4) |
 | `AGENTVPS_WORKSPACE_ROOT` | `${user.home}/AgentVPS` | Racine des projets + stores JSON |
 | `AGENTVPS_TELEGRAM_FORUM_CHAT_ID` | (vide) | ID du groupe Telegram "Threads = projets" (§11) |
+| `AGENTVPS_TELEGRAM_SYSTEM_PROJECT_VISIBLE` | `false` | Expose le projet technique `system` dans Telegram et ses Threads |
 | `AGENTVPS_RECURRING_TASKS_NOTIFICATION_CHAT_ID` | (vide) | Chat recevant les notifications de tâches récurrentes |
 
 ## 7. Déployer les fichiers de permissions Claude Code
@@ -124,6 +126,11 @@ attente d'une confirmation interactive qui n'arrivera jamais) — ce n'est
 pas une étape facultative. Voir `architecture.md` §6 pour le détail des
 règles (deny sur `~/.ssh`, `~/.claude`, `~/.ori`, `/etc`, `/root`, `sudo`,
 `rm -rf`).
+
+Le fichier `claude-settings-system.json` est utilisé automatiquement pour les
+appels du projet `system`, y compris ses missions récurrentes. Il autorise en
+plus plusieurs commandes de lecture/agrégation (`wc`, `head`, `tail`, `sort`,
+`uniq`, `find`, `grep`, `cat`) tout en conservant les mêmes règles `deny`.
 
 Ces fichiers sont relus à chaque invocation `claude -p` (pas de cache JVM)
 — un changement de règle ne nécessite pas de rebuild/redeploy du jar.
@@ -179,7 +186,9 @@ Vérifier dans les logs : démarrage propre, bot Telegram enregistré
 
 ## 10. Premier contact
 
-Envoyer `/projet` au bot sur Telegram : aucun projet n'existant encore, un
+Au démarrage, le projet réservé `system` est créé automatiquement dans le store
+(sans appel Claude, sans devenir le projet actif). Envoyer `/projet` au bot :
+si aucun autre projet n'existe encore, un
 projet `default` est créé automatiquement avec une interview (premier appel
 `claude -p` réel — valide en même temps que le binaire, l'authentification
 et les permissions sont correctement en place). Voir `guide-utilisation.md`

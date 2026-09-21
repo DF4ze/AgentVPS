@@ -48,14 +48,10 @@ class ProjectServiceTest {
     }
 
     @Test
-    void createProjectMarksSystemSlugAsElevatedWithRootWorkingDirectory() {
-        Project project = service.createProject("System");
-
-        assertThat(project.getName()).isEqualTo("system");
-        assertThat(project.isElevated()).isTrue();
-        // Contrairement aux autres projets, PAS de sous-dossier projects/<slug> : le cwd
-        // est la racine du workspace elle-meme (voir ProjectService.ELEVATED_PROJECT_SLUG).
-        assertThat(project.getWorkingDirectory()).isEqualTo(workspaceProperties.rootDirPath().toString());
+    void createProjectRejectsReservedSystemSlug() {
+        assertThatThrownBy(() -> service.createProject("System"))
+                .isInstanceOf(ProjectException.class)
+                .hasMessageContaining("reserve");
     }
 
     @Test
@@ -64,6 +60,26 @@ class ProjectServiceTest {
 
         assertThat(project.isElevated()).isFalse();
         assertThat(project.getWorkingDirectory()).endsWith("projects" + java.io.File.separator + "mon-projet");
+    }
+
+    @Test
+    void ensureSystemProjectCreatesItWithoutChangingTheActiveProject() {
+        Project project = service.ensureSystemProject();
+
+        assertThat(project.getName()).isEqualTo("system");
+        assertThat(project.isElevated()).isTrue();
+        assertThat(project.getWorkingDirectory()).isEqualTo(workspaceProperties.rootDirPath().toString());
+        assertThat(service.getActiveProject()).isEmpty();
+    }
+
+    @Test
+    void ensureSystemProjectIsIdempotent() {
+        Project first = service.ensureSystemProject();
+
+        Project second = service.ensureSystemProject();
+
+        assertThat(second).isSameAs(first);
+        assertThat(service.listProjects()).hasSize(1);
     }
 
     @Test
@@ -238,11 +254,23 @@ class ProjectServiceTest {
 
     @Test
     void deleteProjectPermanentlyRejectsTheElevatedSystemProject() {
-        service.createProject("system");
+        service.ensureSystemProject();
 
         assertThatThrownBy(() -> service.deleteProjectPermanently("system"))
                 .isInstanceOf(ProjectException.class);
         assertThat(service.findProjectByName("system")).isPresent();
+    }
+
+    @Test
+    void reservedSystemProjectCannotBeSelectedArchivedOrChanged() {
+        service.ensureSystemProject();
+
+        assertThatThrownBy(() -> service.switchProject("system")).isInstanceOf(ProjectException.class);
+        assertThatThrownBy(() -> service.archiveProject("system")).isInstanceOf(ProjectException.class);
+        assertThatThrownBy(() -> service.startNewConversation("system")).isInstanceOf(ProjectException.class);
+        assertThatThrownBy(() -> service.recordConversationStart("system", "session", null))
+                .isInstanceOf(ProjectException.class);
+        assertThatThrownBy(() -> service.setThreadId("system", 42)).isInstanceOf(ProjectException.class);
     }
 
     @Test

@@ -292,7 +292,9 @@ public class AgentVpsTelegramController {
     }
 
     private void listProjects(Long chatId) {
-        List<Project> projects = projectService.listProjects();
+        List<Project> projects = projectService.listProjects().stream()
+                .filter(this::isVisibleInTelegram)
+                .toList();
         if (projects.isEmpty()) {
             sender().sendMessage(chatId, "Aucun projet pour l'instant. Utilise /projet new <nom> pour en creer un.");
             return;
@@ -501,6 +503,9 @@ public class AgentVpsTelegramController {
         int failed = 0;
 
         for (Project project : projectService.listProjects()) {
+            if (!isVisibleInTelegram(project)) {
+                continue;
+            }
             Integer existingThreadId = project.getTelegramThreadId();
             if (existingThreadId != null && projectThreadService.topicStillExists(existingThreadId)) {
                 kept++;
@@ -541,9 +546,15 @@ public class AgentVpsTelegramController {
      */
     private Optional<Project> resolveContextProject(TelegramUpdateContext context) {
         if (projectThreadService.isForumChat(context.getChatId())) {
-            return projectService.findProjectByThreadId(context.getMessageThreadId());
+            return projectService.findProjectByThreadId(context.getMessageThreadId())
+                    .filter(this::isVisibleInTelegram);
         }
         return projectService.getActiveProject();
+    }
+
+    private boolean isVisibleInTelegram(Project project) {
+        return !ProjectService.ELEVATED_PROJECT_SLUG.equals(project.getName())
+                || projectThreadService.isVisibleInTelegram(project);
     }
 
     // ------------------------------------------------------------------ /conv
@@ -894,7 +905,7 @@ public class AgentVpsTelegramController {
      */
     private void handleChatWithoutActiveProject(TelegramUpdateContext context) {
         Long chatId = context.getChatId();
-        if (!projectService.listProjects().isEmpty()) {
+        if (projectService.listProjects().stream().anyMatch(this::isVisibleInTelegram)) {
             sender().sendMessage(chatId, noActiveProjectHint(chatId));
             return;
         }

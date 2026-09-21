@@ -1,0 +1,54 @@
+Mission : amelioration continue d'AgentVPS par analyse des conversations capturees.
+
+Contexte : quand la capture est activee (agentvps.claude.capture-conversation-logs),
+chaque message @Chat produit un fichier JSONL append-only sous
+conversation-logs/<projet>/chat.jsonl (chemin relatif a ton repertoire de travail
+actuel, qui est la racine du workspace puisque tu executes cette mission depuis le
+projet "system"). Une ligne = un evenement JSON du flux --output-format stream-json
+de claude : evenements "system" (init), "assistant" (texte visible + parfois un bloc
+"thinking" avec le raisonnement complet, + eventuels "tool_use"), "user" (resultats
+d'outils, "tool_result"), et une derniere ligne "result" par appel (session_id,
+duration_ms, usage, cout...).
+
+Objectif : identifier des patterns qui reviennent souvent a travers ces conversations
+et qui meriteraient d'etre automatises ou documentes, par exemple :
+- des erreurs ou blocages qui se repetent (meme type d'echec, memes commandes qui
+  ratent, meme confusion) ;
+- des sequences d'actions manuelles refaites a l'identique ou presque a plusieurs
+  reprises (qui pourraient devenir un script recurrent, sur le modele de
+  health_check.sh) ;
+- des echanges qui consomment visiblement beaucoup de tours/tokens pour un resultat
+  qui aurait pu etre obtenu plus directement (a repartir du raisonnement "thinking"
+  quand il est present, pas seulement du texte final).
+
+Comment explorer sans exploser le budget de cette mission :
+- Commence par `find conversation-logs -name chat.jsonl` puis `wc -l` sur chaque
+  fichier trouve pour jauger le volume avant de lire quoi que ce soit en entier.
+- Prefere `grep`/`tail`/`head` cibles a un `cat` integral d'un gros fichier : par
+  exemple `grep -o '"type":"[a-z_]*"' fichier | sort | uniq -c` pour un premier apercu,
+  ou `grep '"type":"result"'` pour ne recuperer que les lignes de synthese.
+- S'il existe deja un fichier conversation-logs/analysis/script-candidates.md, lis-le
+  en premier : il contient les patterns deja identifies lors d'une execution
+  precedente de cette meme mission - inutile de repartir de zero, mets-le a jour
+  (ajoute les nouveaux patterns, retire ceux visiblement deja traites si tu as un
+  indice clair, garde le reste).
+- Si conversation-logs/ n'existe pas encore ou ne contient aucun fichier chat.jsonl,
+  dis-le simplement dans ta reponse finale (rien a analyser pour l'instant) et
+  arrete-toi la, sans erreur.
+
+Ce que tu dois produire :
+- Ecris (cree ou mets a jour) conversation-logs/analysis/script-candidates.md avec des
+  sections claires : un resume en tete, puis pour chaque pattern identifie une
+  description courte, une estimation de frequence/impact, une proposition concrete
+  (par exemple : nom + commande + frequence cron pour une future tache /tache new en
+  mode script, ou un extrait de prompt/regle a ajouter quelque part), et ton niveau de
+  confiance. Termine par une section "pas encore exploitable" pour les observations
+  trop faibles/isolees pour agir dessus.
+- NE CREE JAMAIS toi-meme de tache recurrente, NE MODIFIE JAMAIS de code ni de
+  configuration : cette mission est strictement une analyse en lecture, ses seules
+  ecritures sont ce fichier de synthese. Les decisions d'automatisation restent a Clem.
+
+Ta toute derniere reponse (voir la consigne generale sur les missions autonomes) doit
+rester courte : une synthese des points marquants de CETTE execution (nouveaux
+patterns trouves, ou rien de neuf depuis la derniere fois), pas le contenu complet du
+fichier.

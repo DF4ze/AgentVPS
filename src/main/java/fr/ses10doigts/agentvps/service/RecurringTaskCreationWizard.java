@@ -424,7 +424,10 @@ public class RecurringTaskCreationWizard {
     }
 
     private List<String> projectNames() {
-        return projectService.listProjects().stream().map(Project::getName).collect(Collectors.toList());
+        return projectService.listProjects().stream()
+                .filter(project -> !project.isElevated())
+                .map(Project::getName)
+                .collect(Collectors.toList());
     }
 
     private static String describePolicy(NotificationPolicy policy) {

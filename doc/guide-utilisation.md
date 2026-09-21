@@ -1,6 +1,6 @@
 # Guide d'utilisation — AgentVPS
 
-*Dernière mise à jour : 03/09/2026*
+*Dernière mise à jour : 21/09/2026*
 
 Utilisation au quotidien du bot Telegram AgentVPS, une fois installé (voir
 `installation.md`). Pour l'architecture interne, voir `architecture.md`.
@@ -92,8 +92,18 @@ indépendamment.
 
 ## Projet "system" (droits élargis)
 
-`/projet new system` crée un projet réservé à droits élargis : son dossier
-de travail est la racine du workspace entière plutôt qu'un sous-dossier
+Le projet `system` est créé automatiquement au démarrage s'il n'existe pas.
+Cette création technique ne lance pas d'interview et ne le rend pas actif. Il
+est réservé au fonctionnement interne : il ne peut pas être créé, sélectionné,
+modifié, archivé ou supprimé via Telegram.
+Sa visibilité dans les listes Telegram et les Threads est contrôlée par
+`AGENTVPS_TELEGRAM_SYSTEM_PROJECT_VISIBLE` (`false` par défaut). Même lorsqu'il
+est visible, il reste non sélectionnable et ne peut pas être géré comme un projet
+utilisateur. Lorsque cette propriété vaut `true` et qu'un forum Telegram est
+configuré, son Thread est créé automatiquement au démarrage de l'application.
+
+Ce projet réservé à droits élargis utilise comme dossier de travail la racine
+entière du workspace plutôt qu'un sous-dossier
 isolé, ce qui lui donne une vue sur tous les autres projets (leurs
 `CLAUDE.md`, l'historique des conversations...). Les règles de sécurité
 (pas de `sudo`, pas d'accès à `~/.ssh`/`~/.claude`/`~/.ori`, pas d'accès aux
@@ -101,6 +111,32 @@ autres applications du serveur tournant sous un autre utilisateur système)
 restent identiques à un projet normal — seul le périmètre de lecture/
 écriture s'élargit. À réserver aux tâches transverses (maintenance, audit,
 analyse cross-projets), pas comme projet de travail courant.
+
+## Amélioration continue
+
+La capture est désactivée par défaut. Pour l'activer, définir
+`AGENTVPS_CLAUDE_CAPTURE_CONVERSATION_LOGS=true` (ou la propriété YAML
+`agentvps.claude.capture-conversation-logs`). Chaque échange de chat est alors
+ajouté au fichier `conversation-logs/<projet>/chat.jsonl` sous forme de flux
+JSONL Claude Code. Avec `OPENROUTER`, ce flux peut aussi contenir le
+raisonnement; avec `ANTHROPIC`, il contient notamment le texte visible et les
+événements d'outils.
+
+La tâche `amelioration-continue` est créée automatiquement au démarrage, mais
+reste désactivée. Après vérification des captures, `/tache enable
+amelioration-continue` l'active sur un rythme hebdomadaire; `/tache run
+amelioration-continue` permet de la tester manuellement. Elle met à jour
+`conversation-logs/analysis/script-candidates.md` et ne crée ni tâche ni
+modification de code/configuration.
+
+Limite connue : pour l'instant, un appel qui se termine en erreur ou en timeout
+ne laisse pas sa sortie partielle dans le fichier JSONL. Les captures sont
+écrites seulement après un appel terminé avec succès.
+
+État de validation : cette feature est implémentée et couverte par les tests
+automatisés, mais n'a pas encore été validée de bout en bout sur une instance
+réelle. La première validation doit vérifier la capture, puis l'activation et
+l'exécution manuelle de `/tache run amelioration-continue`.
 
 ## Limites connues
 

@@ -25,4 +25,11 @@ public class AgentVpsTelegramProperties {
      * comportement complet (list/new/delete/<nom>) partout, comme avant cette feature.
      */
     private String forumChatId;
+
+    /**
+     * Expose ou non le projet reserve "system" dans les vues et Threads Telegram.
+     * Desactive par defaut : le projet reste present et utilisable en interne par les
+     * missions techniques, mais n'est pas un projet pilotable par l'utilisateur.
+     */
+    private boolean systemProjectVisible = false;
 }

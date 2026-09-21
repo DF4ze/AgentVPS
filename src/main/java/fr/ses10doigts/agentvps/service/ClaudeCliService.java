@@ -13,7 +13,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -27,6 +29,10 @@ import java.util.concurrent.TimeUnit;
  * Depuis fin aout 2026, peut aussi router l'appel via Ori Harness vers un modele
  * OpenRouter (ClaudeCliProperties.provider=OPENROUTER) - voir buildCommand() et la
  * memoire projet "ori_openrouter_integration" pour le detail de la validation.
+ *
+ * Depuis le 03/09/2026, peut aussi capturer le flux complet d'un appel (raisonnement
+ * inclus quand le provider le permet) en JSONL - voir la surcharge de call() a 7
+ * arguments et la memoire projet "continuous_improvement_capture".
  */
 @Service
 @RequiredArgsConstructor
@@ -92,6 +98,10 @@ public class ClaudeCliService {
      * mission agent) passent par les overloads existants et continuent d'utiliser
      * properties.getSettingsPath() sans rien changer a leur comportement.
      *
+     * Delegue vers la surcharge a 7 arguments avec captureLogPath=null : comportement
+     * strictement inchange pour tous les appelants existants de CETTE surcharge
+     * (--output-format json, pas de capture).
+     *
      * @param settingsPathOverride chemin --settings a utiliser pour cet appel, ou null/vide
      *                              pour garder properties.getSettingsPath() (comportement des
      *                              autres overloads de call())
@@ -99,16 +109,46 @@ public class ClaudeCliService {
     public ClaudeCliResult call(String prompt, String resumeSessionId, Path workingDirectory,
                                  String appendSystemPrompt, Integer timeoutSecondsOverride,
                                  String settingsPathOverride) {
+        return call(prompt, resumeSessionId, workingDirectory, appendSystemPrompt, timeoutSecondsOverride,
+                settingsPathOverride, null);
+    }
+
+    /**
+     * Variante de call() acceptant en plus un chemin de capture JSONL du flux complet de
+     * l'appel (voir la memoire projet "continuous_improvement_capture") - utilisee par
+     * ChatService quand ClaudeCliProperties.captureConversationLogs est actif.
+     *
+     * Quand captureLogPath est non-null : la commande passe en --output-format stream-json
+     * --verbose (voir buildCommand()) au lieu de json ; CHAQUE ligne du flux (raisonnement
+     * inclus quand le provider le permet, tool_use/tool_result, texte visible, evenement
+     * final "result") est ecrite telle quelle (append) dans ce fichier ; le resultat
+     * structure retourne par cette methode est reconstruit a partir de la DERNIERE ligne du
+     * flux (type "result"), qui a exactement les memes champs que l'objet unique renvoye par
+     * --output-format json (verifie en conditions reelles le 03/09/2026) - ClaudeCliResult/
+     * parseResult() sont donc reutilises tels quels, sans nouveau modele de parsing.
+     *
+     * La capture est best-effort : un echec d'ecriture du fichier JSONL ne fait jamais
+     * echouer l'appel reel (meme philosophie que RecurringTaskNotifier pour les
+     * notifications Telegram, voir la memoire projet "phase7_scheduler_implementation").
+     *
+     * @param captureLogPath chemin du fichier JSONL a alimenter (append-only, cree si besoin
+     *                        y compris son dossier parent), ou null pour le comportement
+     *                        standard (--output-format json, pas de capture)
+     */
+    public ClaudeCliResult call(String prompt, String resumeSessionId, Path workingDirectory,
+                                 String appendSystemPrompt, Integer timeoutSecondsOverride,
+                                 String settingsPathOverride, Path captureLogPath) {
         if (prompt == null || prompt.isBlank()) {
             throw new IllegalArgumentException("Le prompt ne peut pas etre vide");
         }
 
+        boolean streamJson = captureLogPath != null;
         int effectiveTimeoutSeconds = timeoutSecondsOverride != null ? timeoutSecondsOverride : properties.getTimeoutSeconds();
 
-        List<String> command = buildCommand(prompt, resumeSessionId, appendSystemPrompt, settingsPathOverride);
-        log.info("Appel claude CLI (provider={}, resume={}, cwd={}, appendSystemPrompt={}, timeoutSeconds={})",
+        List<String> command = buildCommand(prompt, resumeSessionId, appendSystemPrompt, settingsPathOverride, streamJson);
+        log.info("Appel claude CLI (provider={}, resume={}, cwd={}, appendSystemPrompt={}, timeoutSeconds={}, capture={})",
                 properties.getProvider(), resumeSessionId != null, workingDirectory,
-                appendSystemPrompt != null && !appendSystemPrompt.isBlank(), effectiveTimeoutSeconds);
+                appendSystemPrompt != null && !appendSystemPrompt.isBlank(), effectiveTimeoutSeconds, streamJson);
         log.debug("Commande : {}", command);
 
         ProcessBuilder processBuilder = new ProcessBuilder(command);
@@ -169,7 +209,10 @@ public class ClaudeCliService {
                     .formatted(exitCode, stderr.isBlank() ? "(vide)" : stderr.strip()));
         }
 
-        ClaudeCliResult result = parseResult(stdout);
+        if (captureLogPath != null) {
+            appendCapture(captureLogPath, stdout);
+        }
+        ClaudeCliResult result = parseResult(streamJson ? lastNonBlankLine(stdout) : stdout);
 
         if (result.isError()) {
             throw new ClaudeCliException("claude a renvoye une erreur (subtype=%s) : %s"
@@ -202,13 +245,27 @@ public class ClaudeCliService {
 
     /**
      * Variante de buildCommand() acceptant en plus un chemin --settings dedie (voir le
-     * call() a 6 arguments ci-dessus pour le contexte complet).
+     * call() a 6 arguments ci-dessus pour le contexte complet). Delegue vers la surcharge
+     * a 5 arguments avec streamJson=false (--output-format json, comportement inchange).
      *
      * @param settingsPathOverride chemin --settings a utiliser, ou null/vide pour garder
      *                              properties.getSettingsPath()
      */
     List<String> buildCommand(String prompt, String resumeSessionId, String appendSystemPrompt,
                                String settingsPathOverride) {
+        return buildCommand(prompt, resumeSessionId, appendSystemPrompt, settingsPathOverride, false);
+    }
+
+    /**
+     * Variante de buildCommand() acceptant en plus streamJson : quand true, remplace
+     * "--output-format json" par "--output-format stream-json --verbose" (necessaire pour
+     * la capture du flux complet, voir call() a 7 arguments et la memoire projet
+     * "continuous_improvement_capture" - --verbose confirme necessaire en conditions
+     * reelles le 03/09/2026, pas seulement documente comme requis pour les options
+     * avancees).
+     */
+    List<String> buildCommand(String prompt, String resumeSessionId, String appendSystemPrompt,
+                               String settingsPathOverride, boolean streamJson) {
         List<String> command = new ArrayList<>();
         if (properties.getProvider() == ClaudeProvider.OPENROUTER) {
             command.add(properties.getOpenRouterBinaryPath());
@@ -223,7 +280,10 @@ public class ClaudeCliService {
         command.add("-p");
         command.add(prompt);
         command.add("--output-format");
-        command.add("json");
+        command.add(streamJson ? "stream-json" : "json");
+        if (streamJson) {
+            command.add("--verbose");
+        }
         if (resumeSessionId != null && !resumeSessionId.isBlank()) {
             command.add("--resume");
             command.add(resumeSessionId);
@@ -280,6 +340,43 @@ public class ClaudeCliService {
             return objectMapper.readValue(stdout, ClaudeCliResult.class);
         } catch (JsonProcessingException e) {
             throw new ClaudeCliException("Sortie JSON invalide renvoyee par claude CLI : " + truncate(stdout), e);
+        }
+    }
+
+    /**
+     * Extrait la derniere ligne non-vide d'une sortie --output-format stream-json
+     * (une ligne JSON par evenement) - c'est toujours l'evenement final de type
+     * "result", structurellement compatible avec ClaudeCliResult (voir call() a 7
+     * arguments). Renvoie la chaine entiere telle quelle si aucune ligne non-vide
+     * n'est trouvee (parseResult() produira alors une erreur explicite plutot que de
+     * silencieusement traiter une chaine vide).
+     */
+    static String lastNonBlankLine(String stdout) {
+        String[] lines = stdout.split("\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            if (!lines[i].isBlank()) {
+                return lines[i];
+            }
+        }
+        return stdout;
+    }
+
+    /**
+     * Ecrit le flux brut d'un appel (une ligne JSON par evenement, deja separees par des
+     * retours a la ligne par claude CLI) a la fin du fichier de capture, en creant le
+     * dossier parent si besoin. Best-effort : un echec ne remonte jamais d'exception (voir
+     * javadoc de call() a 7 arguments) - seul un warning est logue.
+     */
+    void appendCapture(Path captureLogPath, String rawStreamOutput) {
+        try {
+            if (captureLogPath.getParent() != null) {
+                Files.createDirectories(captureLogPath.getParent());
+            }
+            String toWrite = rawStreamOutput.endsWith("\n") ? rawStreamOutput : rawStreamOutput + "\n";
+            Files.writeString(captureLogPath, toWrite, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException e) {
+            log.warn("Echec de l'ecriture du log de conversation JSONL ({}) : {}", captureLogPath, e.getMessage());
         }
     }
 
